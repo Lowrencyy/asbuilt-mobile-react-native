@@ -131,9 +131,10 @@ export default function TeardownComponentsScreen() {
   const declaredRuns  = Number(params.declared_runs)  || 0;
   const lengthMeters  = Number(params.length_meters)  || 0;
 
-  const startedAt = useRef(new Date().toISOString());
-  const gpsRef    = useRef<{ lat: number; lng: number; acc: number | null } | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
+  const startedAt       = useRef(new Date().toISOString());
+  const gpsRef          = useRef<{ lat: number; lng: number; acc: number | null; capturedAt: string } | null>(null);
+  const photoTimestamps = useRef<Record<string, string>>({});
+  const scrollRef       = useRef<ScrollView>(null);
 
   // ── Step ──────────────────────────────────────────────────────────────────
   const [step, setStep] = useState(0);
@@ -185,7 +186,14 @@ export default function TeardownComponentsScreen() {
       Object.entries(files).map(async ([key, file]) => {
         const path = draftDir + file;
         const info = await FileSystem.getInfoAsync(path);
-        result[key] = info.exists ? { uri: info.uri, name: file, type: "image/jpeg" } : null;
+        if (info.exists) {
+          result[key] = { uri: info.uri, name: file, type: "image/jpeg" };
+          if ("modificationTime" in info && info.modificationTime) {
+            photoTimestamps.current[key] = new Date(info.modificationTime * 1000).toISOString();
+          }
+        } else {
+          result[key] = null;
+        }
       })
     );
     setPhotos(result);
@@ -194,6 +202,9 @@ export default function TeardownComponentsScreen() {
     const cableInfo = await FileSystem.getInfoAsync(cablePath);
     if (cableInfo.exists) {
       setCablePhoto({ uri: cableInfo.uri, name: `${fromCode}_cable.jpg`, type: "image/jpeg" });
+      if ("modificationTime" in cableInfo && cableInfo.modificationTime) {
+        photoTimestamps.current["before_span"] = new Date(cableInfo.modificationTime * 1000).toISOString();
+      }
     }
   }
 
@@ -203,7 +214,7 @@ export default function TeardownComponentsScreen() {
       if (status !== "granted") return;
       const last = await Location.getLastKnownPositionAsync({ maxAge: 30000 }).catch(() => null);
       if (last && last.coords.accuracy != null && last.coords.accuracy <= 50) {
-        gpsRef.current = { lat: last.coords.latitude, lng: last.coords.longitude, acc: last.coords.accuracy };
+        gpsRef.current = { lat: last.coords.latitude, lng: last.coords.longitude, acc: last.coords.accuracy, capturedAt: new Date(last.timestamp).toISOString() };
         return;
       }
       const loc = await Promise.race([
@@ -211,7 +222,7 @@ export default function TeardownComponentsScreen() {
         new Promise<null>((res) => setTimeout(() => res(null), 60000)),
       ]);
       if (loc) {
-        gpsRef.current = { lat: loc.coords.latitude, lng: loc.coords.longitude, acc: loc.coords.accuracy };
+        gpsRef.current = { lat: loc.coords.latitude, lng: loc.coords.longitude, acc: loc.coords.accuracy, capturedAt: new Date(loc.timestamp).toISOString() };
       }
     } catch { /* non-blocking */ }
   }
@@ -223,6 +234,7 @@ export default function TeardownComponentsScreen() {
     if (!result.canceled && result.assets[0]) {
       const uri = result.assets[0].uri;
       const fileName = `${fromCode}_cable.jpg`;
+      photoTimestamps.current["before_span"] = new Date().toISOString();
       await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
       await FileSystem.copyAsync({ from: uri, to: draftDir + fileName }).catch(() => {});
       setCablePhoto({ uri: draftDir + fileName, name: fileName, type: "image/jpeg" });
@@ -298,8 +310,16 @@ export default function TeardownComponentsScreen() {
       fields.gps_latitude  = String(gps.lat);
       fields.gps_longitude = String(gps.lng);
       if (gps.acc != null) fields.gps_accuracy = gps.acc.toFixed(2);
-      fields.from_pole_latitude  = String(gps.lat);
-      fields.from_pole_longitude = String(gps.lng);
+      fields.from_pole_latitude      = String(gps.lat);
+      fields.from_pole_longitude     = String(gps.lng);
+      fields.from_pole_gps_captured_at = gps.capturedAt;
+    }
+    // fallback timestamp so the photo stamp always shows capture time, not upload time
+    fields.captured_at_device = startedAt.current;
+
+    // per-photo capture timestamps (file mod time from draft, or live capture time)
+    for (const [key, ts] of Object.entries(photoTimestamps.current)) {
+      fields[`${key}_captured_at`] = ts;
     }
 
     if (params.to_pole_latitude) {
@@ -366,6 +386,7 @@ export default function TeardownComponentsScreen() {
       params: {
         from_pole_code:   params.pole_code     ?? "",
         from_pole_name:   params.pole_name     ?? "",
+        to_pole_id:       params.to_pole_id    ?? "",
         to_pole_code:     params.to_pole_code  ?? "",
         to_pole_name:     params.to_pole_name  ?? "",
         node_id:          params.node_id       ?? "",

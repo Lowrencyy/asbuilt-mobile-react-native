@@ -1,10 +1,14 @@
 import api, { assetUrl } from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
+import { prefetchAll } from "@/lib/prefetch";
+import { processSyncQueue, queueCount } from "@/lib/sync-queue";
+import { tokenStore } from "@/lib/token";
 import { projectStore, type Project } from "@/lib/store";
 import * as Location from "expo-location";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Easing,
   FlatList,
@@ -90,6 +94,7 @@ function buildHtml(
   bgMap: typeof weatherBackgrounds,
   iconMap: typeof weatherIcons,
   preloaded?: WeatherCache | null,
+  userName?: string,
 ) {
   const fallbackHour = new Date(
     new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }),
@@ -784,7 +789,7 @@ function buildHtml(
   <div class="widget">
     <div class="top-bar">
       <div class="greeting-text" id="greeting-text">Good Morning</div>
-      <div class="name-text">Mark Laurence</div>
+      <div class="name-text">${userName ?? "User"}</div>
     </div>
 
     <div class="time-card">
@@ -1453,6 +1458,54 @@ export default function Index() {
     null,
   );
   const [weatherCache, setWeatherCache] = useState<WeatherCache | null>(null);
+  const [userName, setUserName] = useState("User");
+
+  useEffect(() => {
+    tokenStore.getUser().then((u: any) => {
+      const first = u?.first_name ?? "";
+      const last = u?.last_name ?? "";
+      const name = `${first} ${last}`.trim();
+      if (name) setUserName(name);
+    });
+  }, []);
+  const [syncing, setSyncing] = useState(false);
+  const [lastSynced, setLastSynced] = useState<number | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const syncSpin = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    cacheGet<number>("last_synced").then((ts) => { if (ts) setLastSynced(ts); });
+    queueCount().then(setPendingCount);
+  }, []);
+
+  useEffect(() => {
+    if (!syncing) { syncSpin.setValue(0); return; }
+    Animated.loop(
+      Animated.timing(syncSpin, { toValue: 1, duration: 800, easing: Easing.linear, useNativeDriver: true }),
+    ).start();
+    return () => syncSpin.stopAnimation();
+  }, [syncing]);
+
+  function formatLastSynced(ts: number | null): string {
+    if (!ts) return "Never synced";
+    const min = Math.floor((Date.now() - ts) / 60000);
+    if (min < 1) return "Just synced";
+    if (min < 60) return `Synced ${min}m ago`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `Synced ${h}h ago`;
+    return `Synced ${Math.floor(h / 24)}d ago`;
+  }
+
+  async function handleSync() {
+    if (syncing) return;
+    setSyncing(true);
+    await Promise.allSettled([prefetchAll(), processSyncQueue()]);
+    const now = Date.now();
+    await cacheSet("last_synced", now);
+    setLastSynced(now);
+    queueCount().then(setPendingCount);
+    setSyncing(false);
+  }
 
   const webViewHtml = useMemo(
     () =>
@@ -1462,8 +1515,9 @@ export default function Index() {
         weatherBackgrounds,
         weatherIcons,
         weatherCache,
+        userName,
       ),
-    [coords?.lat, coords?.lon, weatherCache],
+    [coords?.lat, coords?.lon, weatherCache, userName],
   );
 
   useEffect(() => {
@@ -1723,6 +1777,39 @@ export default function Index() {
           domStorageEnabled
           mixedContentMode="always"
         />
+
+        {/* Manual sync button — top-right of greeting */}
+        <View style={styles.syncWrapper}>
+          <TouchableOpacity
+            onPress={handleSync}
+            disabled={syncing}
+            activeOpacity={0.75}
+            style={styles.syncBtn}
+          >
+            {syncing ? (
+              <ActivityIndicator size={16} color="#0A5C3B" />
+            ) : (
+              <Animated.Text
+                style={[
+                  styles.syncIcon,
+                  {
+                    transform: [{
+                      rotate: syncSpin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }),
+                    }],
+                  },
+                ]}
+              >
+                ↻
+              </Animated.Text>
+            )}
+            {pendingCount > 0 && (
+              <View style={styles.syncBadge}>
+                <Text style={styles.syncBadgeText}>{pendingCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <Text style={styles.syncLabel}>{formatLastSynced(lastSynced)}</Text>
+        </View>
       </View>
 
       <Animated.View
@@ -1839,6 +1926,56 @@ const styles = StyleSheet.create({
 
   webviewWrap: {
     flex: 1,
+  },
+
+  syncWrapper: {
+    position: "absolute",
+    top: 30,
+    right: 20,
+    alignItems: "center",
+    zIndex: 10,
+  },
+
+  syncBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(10,92,59,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  syncIcon: {
+    fontSize: 22,
+    color: "#0A5C3B",
+    lineHeight: 24,
+  },
+
+  syncBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#EF4444",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+
+  syncBadgeText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#ffffff",
+  },
+
+  syncLabel: {
+    marginTop: 4,
+    fontSize: 9,
+    fontWeight: "600",
+    color: "#0A5C3B",
+    opacity: 0.7,
   },
 
   webview: {

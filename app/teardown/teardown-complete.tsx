@@ -18,6 +18,7 @@ export default function TeardownCompleteScreen() {
   const {
     from_pole_code,
     from_pole_name,
+    to_pole_id,
     to_pole_code,
     to_pole_name,
     node_id,
@@ -46,8 +47,16 @@ export default function TeardownCompleteScreen() {
 
   function goToNext() {
     router.replace({
-      pathname: "/teardown/select-pair" as any,
-      params: { pole_code: from_pole_code, pole_name: from_pole_name, node_id, project_id, project_name, accent },
+      pathname: "/projects/pole-detail" as any,
+      params: {
+        pole_id:      to_pole_id,
+        pole_code:    to_pole_code,
+        pole_name:    to_pole_name,
+        node_id,
+        project_id,
+        project_name,
+        accent,
+      },
     });
   }
 
@@ -87,7 +96,7 @@ export default function TeardownCompleteScreen() {
         <Animated.View entering={FadeInDown.delay(400)} style={{ width: "100%" }}>
           <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: accentColor }]} onPress={goToNext} activeOpacity={0.85}>
             <Text style={styles.primaryBtnText}>Go to Next  →</Text>
-            <Text style={styles.primaryBtnSub}>Continue teardown on {from_pole_code}</Text>
+            <Text style={styles.primaryBtnSub}>Continue teardown on {to_pole_code}</Text>
           </TouchableOpacity>
         </Animated.View>
 

@@ -50,8 +50,9 @@ function sanitize(s?: string) {
 }
 
 export default function SelectPairScreen() {
-  const { pole_code, pole_name, node_id, project_id, project_name, accent } =
+  const { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent } =
     useLocalSearchParams<{
+      pole_id: string;
       pole_code: string;
       pole_name: string;
       node_id: string;
@@ -128,9 +129,9 @@ export default function SelectPairScreen() {
 
   // Fetch spans (stale-while-revalidate)
   useEffect(() => {
-    if (!pole_code) return;
+    if (!pole_id) return;
     setStatus("loading");
-    const CACHE_KEY = `spans_pole_${pole_code}`;
+    const CACHE_KEY = `spans_pole_${pole_id}`;
 
     // Show cached spans immediately
     cacheGet<Span[]>(CACHE_KEY).then((cached) => {
@@ -143,7 +144,7 @@ export default function SelectPairScreen() {
 
     // Fetch fresh in background
     api
-      .get(`/poles/${pole_code}/spans`)
+      .get(`/poles/${pole_id}/spans`)
       .then(({ data }) => {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(CACHE_KEY, list);
@@ -239,9 +240,9 @@ export default function SelectPairScreen() {
               style={[styles.retryBtn, { backgroundColor: accentColor }]}
               onPress={() => {
                 setStatus("loading");
-                const CACHE_KEY = `spans_pole_${pole_code}`;
+                const CACHE_KEY = `spans_pole_${pole_id}`;
                 api
-                  .get(`/poles/${pole_code}/spans`)
+                  .get(`/poles/${pole_id}/spans`)
                   .then(({ data }) => {
                     const list: Span[] = Array.isArray(data)
                       ? data

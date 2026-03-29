@@ -1,11 +1,13 @@
 import api from "@/lib/api";
+import { cacheGet, cacheSet } from "@/lib/cache";
+import { gpsQueueFlush, gpsQueueGet, gpsQueueHasPole, gpsQueuePush } from "@/lib/gps-queue";
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -21,6 +23,22 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 type PhotoField = { uri: string; name: string; type: string } | null;
+
+type Span = {
+  id: number;
+  pole_span_code: string | null;
+  length_meters: number;
+  runs: number;
+  expected_cable: number;
+  expected_node: number;
+  expected_amplifier: number;
+  expected_extender: number;
+  expected_tsc: number;
+  expected_powersupply: number;
+  expected_powersupply_housing: number;
+  from_pole: { id: number; pole_code: string; pole_name: string | null };
+  to_pole:   { id: number; pole_code: string; pole_name: string | null };
+};
 
 const SLOTS = ["DA", "C1", "C2", "C3", "C4", "C5"] as const;
 
@@ -178,8 +196,9 @@ function PhotoCard({
 }
 
 export default function PoleDetailScreen() {
-  const { pole_code: pole_id, pole_name, node_id, project_id, project_name, accent } =
+  const { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent } =
     useLocalSearchParams<{
+      pole_id: string;
       pole_code: string;
       pole_name: string;
       node_id: string;
@@ -192,8 +211,47 @@ export default function PoleDetailScreen() {
 
   const [lat, setLat] = useState<number | null>(null);
   const [lng, setLng] = useState<number | null>(null);
+  const [poleLoading, setPoleLoading] = useState(true);
   const [gpsCapturing, setGpsCapturing] = useState(false);
+  const [gpsQueued, setGpsQueued] = useState(false);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const prewarmedGps = useRef<{ latitude: number; longitude: number; accuracy: number | null } | null>(null);
+  const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const [street, setStreet] = useState("");
+
+  // Live GPS watcher — starts on screen open, updates accuracy in real-time
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+
+      const sub = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Highest,
+          distanceInterval: 1,  // ignore moves < 1m (GPS noise)
+          timeInterval: 2000,
+        },
+        (loc) => {
+          if (!mounted) return;
+          prewarmedGps.current = loc.coords;
+          setGpsAccuracy(Math.round(loc.coords.accuracy ?? 999));
+        },
+      );
+
+      if (mounted) {
+        locationWatcher.current = sub;
+      } else {
+        sub.remove();
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      locationWatcher.current?.remove();
+      locationWatcher.current = null;
+    };
+  }, []);
 
   const [photoBefore, setPhotoBefore] = useState<PhotoField>(null);
   const [photoAfter, setPhotoAfter] = useState<PhotoField>(null);
@@ -201,17 +259,54 @@ export default function PoleDetailScreen() {
 
   const [slot, setSlot] = useState("");
   const [landmark, setLandmark] = useState("");
+  const [spans, setSpans] = useState<Span[]>([]);
+
+  // Persist slot/landmark so back navigation restores them
+  useEffect(() => { cacheSet(`draft_slot_${pole_id}`, slot).catch(() => {}); }, [slot]);
+  useEffect(() => { cacheSet(`draft_landmark_${pole_id}`, landmark).catch(() => {}); }, [landmark]);
 
 
   const projFolder = sanitize(project_name);
-  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_id}/`;
+  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_code}/`;
   const F = {
-    before: `pole_${pole_id}_before.jpg`,
-    after: `pole_${pole_id}_after.jpg`,
-    tag: `pole_${pole_id}_poletag.jpg`,
+    before: `pole_${pole_code}_before.jpg`,
+    after: `pole_${pole_code}_after.jpg`,
+    tag: `pole_${pole_code}_poletag.jpg`,
   };
 
   useEffect(() => {
+    // Flush any queued GPS saves and check if this pole has a pending one
+    gpsQueueFlush().catch(() => {});
+    gpsQueueHasPole(pole_id).then(setGpsQueued);
+
+    // Show existing pole GPS instantly: cache → queue → API (in order)
+    cacheGet<{ lat: number; lng: number }>(`pole_gps_${pole_id}`).then(async (g) => {
+      if (g?.lat && g?.lng) {
+        setLat(g.lat); setLng(g.lng); setPoleLoading(false);
+      } else {
+        // Fallback: GPS captured offline — queue has it but cache may have been cleared
+        const q = await gpsQueueGet(pole_id);
+        if (q?.lat && q?.lng) { setLat(q.lat); setLng(q.lng); }
+      }
+    }).catch(() => {});
+
+    // Restore slot/landmark from local cache first (fast), API fills in if empty
+    cacheGet<string>(`draft_slot_${pole_id}`).then((v) => { if (v) setSlot(v); }).catch(() => {});
+    cacheGet<string>(`draft_landmark_${pole_id}`).then((v) => { if (v) setLandmark(v); }).catch(() => {});
+
+    // Pre-fetch spans — store in state for direct navigation when only 1 span
+    const SPANS_KEY = `spans_pole_${pole_id}`;
+    cacheGet<Span[]>(SPANS_KEY).then((cached) => {
+      if (cached?.length) setSpans(cached);
+    });
+    api.get(`/poles/${pole_id}/spans`)
+      .then(({ data }) => {
+        const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
+        cacheSet(SPANS_KEY, list);
+        setSpans(list);
+      })
+      .catch(() => {});
+
     api
       .get(`/poles/${pole_id}`)
       .then(({ data }) => {
@@ -219,11 +314,15 @@ export default function PoleDetailScreen() {
         if (d?.slot) setSlot(d.slot);
         if (d?.remarks) setLandmark(d.remarks);
         if (d?.map_latitude && d?.map_longitude) {
-          setLat(Number(d.map_latitude));
-          setLng(Number(d.map_longitude));
+          const lat = Number(d.map_latitude);
+          const lng = Number(d.map_longitude);
+          setLat(lat);
+          setLng(lng);
+          cacheSet(`pole_gps_${pole_id}`, { lat, lng }).catch(() => {});
         }
+        setPoleLoading(false);
       })
-      .catch(() => {});
+      .catch(() => { setPoleLoading(false); });
 
     (async () => {
       const dirInfo = await FileSystem.getInfoAsync(draftDir);
@@ -339,28 +438,31 @@ export default function PoleDetailScreen() {
     setGpsCapturing(true);
 
     try {
-      const loc = await Promise.race([
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
-        new Promise<null>((res) => setTimeout(() => res(null), 20000)),
-      ]);
+      // Use latest coords from the live watcher — instant
+      const coords = prewarmedGps.current;
 
-      if (!loc) {
-        Alert.alert("GPS timeout", "Could not get location. Try again.");
+      if (!coords) {
+        Alert.alert("GPS not ready", "Still acquiring signal. Please wait a moment.");
         return;
       }
 
-      setLat(loc.coords.latitude);
-      setLng(loc.coords.longitude);
+      setLat(coords.latitude);
+      setLng(coords.longitude);
+      cacheSet(`pole_gps_${pole_id}`, { lat: coords.latitude, lng: coords.longitude }).catch(() => {});
 
-      await api.post(`/poles/${pole_id}/gps`, {
-        map_latitude: loc.coords.latitude,
-        map_longitude: loc.coords.longitude,
-      });
+      // 3. Try saving to backend — queue if offline
+      try {
+        await api.post(`/poles/${pole_id}/gps`, {
+          map_latitude: coords.latitude,
+          map_longitude: coords.longitude,
+        });
+        setGpsQueued(false);
+      } catch {
+        await gpsQueuePush(pole_id, coords.latitude, coords.longitude);
+        setGpsQueued(true);
+      }
     } catch (e: any) {
-      Alert.alert(
-        "Error",
-        e?.response?.data?.message ?? e?.message ?? "Failed to save GPS.",
-      );
+      Alert.alert("Error", e?.message ?? "Failed to capture GPS.");
     } finally {
       setGpsCapturing(false);
     }
@@ -368,7 +470,47 @@ export default function PoleDetailScreen() {
 
   const hasGps = !!(lat && lng);
   // "Select Pair" only needs GPS + before + pole_tag (after is optional)
-  const canSelectPair = hasGps && !!photoBefore && !!photoTag;
+  // poleLoading=true means we're still checking backend — don't block yet
+  const canSelectPair = (hasGps || poleLoading) && !!photoBefore && !!photoTag;
+
+  function goToDestination(span: Span) {
+    const isReversed = span.to_pole.pole_code === pole_code;
+    const actualToId   = isReversed ? String(span.from_pole.id)   : String(span.to_pole.id);
+    const actualToCode = isReversed ? span.from_pole.pole_code     : span.to_pole.pole_code;
+    const actualToName = isReversed ? (span.from_pole.pole_name ?? span.from_pole.pole_code) : (span.to_pole.pole_name ?? span.to_pole.pole_code);
+    router.push({
+      pathname: "/teardown/destination-pole" as any,
+      params: {
+        pole_code, pole_name, node_id, project_id, project_name, accent: accentColor,
+        span_id:   String(span.id),
+        span_code: span.pole_span_code ?? "",
+        to_pole_id:   actualToId,
+        to_pole_code: actualToCode,
+        to_pole_name: actualToName,
+        expected_cable:               String(span.expected_cable),
+        length_meters:                String(span.length_meters),
+        declared_runs:                String(span.runs),
+        expected_node:                String(span.expected_node),
+        expected_amplifier:           String(span.expected_amplifier),
+        expected_extender:            String(span.expected_extender),
+        expected_tsc:                 String(span.expected_tsc),
+        expected_powersupply:         String(span.expected_powersupply),
+        expected_powersupply_housing: String(span.expected_powersupply_housing),
+      },
+    });
+  }
+
+  function handleNext() {
+    if (!canSelectPair) return;
+    if (spans.length === 1) {
+      goToDestination(spans[0]);
+    } else {
+      router.push({
+        pathname: "/teardown/select-pair" as any,
+        params: { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent: accentColor },
+      });
+    }
+  }
 
   const progress = useMemo(
     () =>
@@ -497,7 +639,7 @@ export default function PoleDetailScreen() {
                       : styles.sectionPillTextMuted,
                   ]}
                 >
-                  {hasGps ? "Captured" : "Required"}
+                  {hasGps ? "Captured" : poleLoading ? "Checking…" : "Required"}
                 </Text>
               </View>
             </View>
@@ -521,7 +663,7 @@ export default function PoleDetailScreen() {
                     : { backgroundColor: `${accentColor}18` },
                 ]}
               >
-                {gpsCapturing ? (
+                {gpsCapturing || (poleLoading && !hasGps) ? (
                   <ActivityIndicator color={accentColor} size="small" />
                 ) : (
                   <Text style={styles.gpsIcon}>📍</Text>
@@ -535,13 +677,22 @@ export default function PoleDetailScreen() {
                     hasGps ? { color: "#065F46" } : { color: "#111827" },
                   ]}
                 >
-                  {hasGps ? "GPS Captured Successfully" : "Capture Current GPS"}
+                  {hasGps ? "GPS Captured Successfully" : poleLoading ? "Loading GPS…" : "Capture Current GPS"}
                 </Text>
                 <Text style={styles.gpsSubtitle}>
                   {hasGps
                     ? street || `${lat?.toFixed(6)}, ${lng?.toFixed(6)}`
-                    : "Get your exact field location before submitting"}
+                    : gpsAccuracy === null
+                      ? "Acquiring signal…"
+                      : gpsAccuracy <= 5
+                        ? `✅ Accuracy: ${gpsAccuracy}m — Ready`
+                        : gpsAccuracy <= 15
+                          ? `📡 Accuracy: ${gpsAccuracy}m — Improving…`
+                          : `📡 Accuracy: ${gpsAccuracy}m — Weak signal`}
                 </Text>
+                {gpsQueued && (
+                  <Text style={styles.gpsPendingLabel}>⏳ Pending upload — will sync when online</Text>
+                )}
               </View>
 
               <View style={styles.gpsArrowWrap}>
@@ -670,7 +821,7 @@ export default function PoleDetailScreen() {
         <View style={styles.ctaBar}>
           {!canSelectPair && (
             <View style={styles.requirementsList}>
-              {!hasGps && <Text style={styles.reqItem}>• GPS location required</Text>}
+              {!hasGps && !poleLoading && <Text style={styles.reqItem}>• GPS location required</Text>}
               {!photoBefore && <Text style={styles.reqItem}>• Before photo required</Text>}
               {!photoTag && <Text style={styles.reqItem}>• Pole tag photo required</Text>}
             </View>
@@ -681,20 +832,7 @@ export default function PoleDetailScreen() {
               { backgroundColor: canSelectPair ? accentColor : "#D1D5DB" },
             ]}
             activeOpacity={canSelectPair ? 0.85 : 1}
-            onPress={() => {
-              if (!canSelectPair) return;
-              router.push({
-                pathname: "/teardown/select-pair" as any,
-                params: {
-                  pole_code: pole_id,
-                  pole_name: pole_name,
-                  node_id: node_id,
-                  project_id: project_id,
-                  project_name: project_name,
-                  accent: accentColor,
-                },
-              });
-            }}
+            onPress={handleNext}
             disabled={!canSelectPair}
           >
             <Text style={styles.submitText}>
@@ -1291,5 +1429,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#B45309",
     fontWeight: "600",
+  },
+
+  gpsPendingLabel: {
+    fontSize: 11,
+    color: "#B45309",
+    fontWeight: "600",
+    marginTop: 4,
   },
 });

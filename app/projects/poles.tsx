@@ -103,6 +103,7 @@ function PoleCard({
         router.push({
           pathname: "/projects/pole-detail",
           params: {
+            pole_id: String(pole.id),
             pole_code: pole.pole_code,
             pole_name: pole.pole_name || pole.pole_code,
             node_id: nodeId,
@@ -158,7 +159,7 @@ function PoleCard({
 
             <Text style={styles.heroLabel}>POLE</Text>
             <Text style={styles.heroTitle} numberOfLines={1}>
-              {pole.pole_code}
+              {label}
             </Text>
           </View>
         </View>
@@ -417,7 +418,7 @@ export default function PolesScreen() {
                       <TextInput
                         value={search}
                         onChangeText={setSearch}
-                        placeholder="Search pole code, slot, status..."
+                        placeholder="Search pole name, code, slot, status..."
                         placeholderTextColor="#9CA3AF"
                         style={styles.searchInput}
                       />

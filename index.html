@@ -1,390 +1,620 @@
 <!doctype html>
-<html lang="en">
+<html>
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GSAP Preloader</title>
-
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Node Schematic — TelcoVantage</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
       * {
         margin: 0;
         padding: 0;
         box-sizing: border-box;
-        font-family: "Poppins", sans-serif;
       }
-
       html,
       body {
         width: 100%;
-        height: 100%;
-        background: #050816;
-        color: white;
-        overflow: hidden;
+        height: 100vh;
+        font-family: "Inter", sans-serif;
+        background: #f0f4f8;
+      }
+      #map {
+        width: 100%;
+        height: 100vh;
+        cursor: grab;
+      }
+      #map:active {
+        cursor: grabbing;
+      }
+      .leaflet-div-icon {
+        background: none !important;
+        border: none !important;
       }
 
-      body {
-        position: relative;
-      }
-
-      /* PRELOADER */
-      .preloader {
-        position: fixed;
-        inset: 0;
-        background:
-          radial-gradient(
-            circle at top,
-            rgba(0, 180, 255, 0.15),
-            transparent 40%
-          ),
-          linear-gradient(135deg, #030712, #0b1120 60%, #020617);
-        z-index: 9999;
+      .pole-circle {
         display: flex;
         align-items: center;
         justify-content: center;
-        flex-direction: column;
-      }
-
-      .preloader::before {
-        content: "";
-        position: absolute;
-        width: 300px;
-        height: 300px;
         border-radius: 50%;
-        background: rgba(0, 174, 255, 0.08);
-        filter: blur(80px);
-        animation: pulseGlow 2.5s ease-in-out infinite;
+        border: 3px solid;
+        font-family: "Inter", sans-serif;
+        font-weight: 800;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+        cursor: pointer;
+        transition:
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .pole-circle:hover {
+        transform: scale(1.2);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
       }
 
-      @keyframes pulseGlow {
-        0%,
-        100% {
-          transform: scale(1);
-          opacity: 0.7;
-        }
-        50% {
-          transform: scale(1.18);
-          opacity: 1;
-        }
+      .leaflet-tooltip {
+        font-family: "Inter", sans-serif !important;
+        padding: 0 !important;
+        background: none !important;
+        border: none !important;
+        box-shadow: none !important;
+      }
+      .leaflet-tooltip-top:before {
+        display: none;
       }
 
-      .loader-wrap {
-        width: min(420px, 85vw);
-        text-align: center;
-        position: relative;
-        z-index: 2;
+      .tt {
+        background: #1e2433;
+        color: #fff;
+        border-radius: 12px;
+        padding: 11px 15px;
+        min-width: 190px;
+        font-family: "Inter", sans-serif;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+        pointer-events: none;
       }
-
-      .loader-title {
-        font-size: clamp(24px, 5vw, 42px);
-        font-weight: 700;
-        letter-spacing: 4px;
-        text-transform: uppercase;
-        margin-bottom: 18px;
-        background: linear-gradient(90deg, #fff, #7dd3fc, #38bdf8, #fff);
-        background-size: 200% auto;
-        color: transparent;
-        -webkit-background-clip: text;
-        background-clip: text;
-        animation: shimmer 3s linear infinite;
-      }
-
-      @keyframes shimmer {
-        to {
-          background-position: 200% center;
-        }
-      }
-
-      .loader-sub {
+      .tt-title {
         font-size: 13px;
-        letter-spacing: 6px;
-        color: rgba(255, 255, 255, 0.55);
-        margin-bottom: 30px;
-        text-transform: uppercase;
+        font-weight: 800;
+        margin-bottom: 7px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        padding-bottom: 6px;
       }
-
-      .progress-shell {
-        width: 100%;
-        height: 14px;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 999px;
-        overflow: hidden;
-        box-shadow:
-          inset 0 0 12px rgba(255, 255, 255, 0.03),
-          0 0 18px rgba(56, 189, 248, 0.08);
-        backdrop-filter: blur(10px);
-      }
-
-      .progress-bar {
-        width: 0%;
-        height: 100%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, #22d3ee, #38bdf8, #2563eb);
-        box-shadow:
-          0 0 12px rgba(56, 189, 248, 0.6),
-          0 0 30px rgba(37, 99, 235, 0.35);
-        transform-origin: left center;
-      }
-
-      .progress-meta {
-        margin-top: 16px;
+      .tt-row {
         display: flex;
-        align-items: center;
         justify-content: space-between;
-        font-size: 14px;
-        color: rgba(255, 255, 255, 0.7);
+        font-size: 11px;
+        margin-top: 5px;
+        gap: 12px;
       }
-
-      .percent {
-        font-size: 32px;
+      .tt-label {
+        color: #9ca3af;
+        font-weight: 600;
+      }
+      .tt-val {
+        color: #fff;
         font-weight: 700;
-        color: #e0f2fe;
-        text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+        text-align: right;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 99px;
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
       }
 
-      .scanline {
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(
-          to bottom,
-          transparent 0%,
-          rgba(255, 255, 255, 0.03) 50%,
-          transparent 100%
-        );
-        background-size: 100% 6px;
-        opacity: 0.18;
-        pointer-events: none;
-        z-index: 1;
-      }
-
-      /* CONTENT */
-      .main-content {
-        width: 100%;
-        height: 100%;
-        display: grid;
-        place-items: center;
-        opacity: 0;
-        transform: scale(1.04);
-        background:
-          radial-gradient(
-            circle at center,
-            rgba(59, 130, 246, 0.08),
-            transparent 35%
-          ),
-          linear-gradient(135deg, #020617, #0f172a);
-      }
-
-      .hero {
-        text-align: center;
-        padding: 20px;
-      }
-
-      .hero h1 {
-        font-size: clamp(32px, 6vw, 70px);
-        margin-bottom: 10px;
-        letter-spacing: 2px;
-      }
-
-      .hero p {
-        color: rgba(255, 255, 255, 0.65);
-        font-size: clamp(14px, 2vw, 18px);
-      }
-
-      /* teardown panels */
-      .panel {
+      #legend {
         position: fixed;
-        inset: 0;
-        z-index: 10000;
-        pointer-events: none;
+        bottom: 18px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1e2433;
+        color: #fff;
+        border-radius: 14px;
+        padding: 10px 22px;
         display: flex;
+        gap: 20px;
+        align-items: center;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        font-size: 11px;
+        font-weight: 700;
+        z-index: 9999;
+        white-space: nowrap;
+      }
+      .ld {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 5px;
+        vertical-align: middle;
       }
 
-      .panel .left,
-      .panel .right {
-        width: 50%;
-        height: 100%;
-        background: linear-gradient(135deg, #020617, #0b1120);
-      }
-
-      .panel .left {
-        border-right: 1px solid rgba(255, 255, 255, 0.04);
-      }
-
-      .panel .right {
-        border-left: 1px solid rgba(255, 255, 255, 0.04);
+      #hint {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        background: rgba(30, 36, 51, 0.82);
+        color: #9ca3af;
+        border-radius: 10px;
+        padding: 8px 14px;
+        font-size: 11px;
+        font-weight: 600;
+        z-index: 9999;
+        backdrop-filter: blur(6px);
+        letter-spacing: 0.2px;
       }
     </style>
   </head>
   <body>
-    <div class="preloader" id="preloader">
-      <div class="scanline"></div>
+    <div id="map"></div>
 
-      <div class="loader-wrap">
-        <div class="loader-title">Initializing</div>
-        <div class="loader-sub">system boot sequence</div>
-
-        <div class="progress-shell">
-          <div class="progress-bar" id="progressBar"></div>
-        </div>
-
-        <div class="progress-meta">
-          <span>Status: Loading assets</span>
-          <span class="percent" id="percent">0%</span>
-        </div>
-      </div>
+    <div id="legend">
+      <span><span class="ld" style="background: #10b981"></span>Completed</span>
+      <span><span class="ld" style="background: #f59e0b"></span>Pending</span>
+      <span
+        ><span class="ld" style="background: #3b82f6"></span>Not Started</span
+      >
+      <span><span class="ld" style="background: #ef4444"></span>Canceled</span>
     </div>
 
-    <div class="panel" id="panel">
-      <div class="left"></div>
-      <div class="right"></div>
+    <div id="hint">
+      🖱 Scroll = zoom &nbsp;·&nbsp; Drag = pan &nbsp;·&nbsp; Hover = details
     </div>
-
-    <main class="main-content" id="mainContent">
-      <div class="hero">
-        <h1>Website Ready</h1>
-        <p>Smooth GSAP teardown animation with cinematic preload experience.</p>
-      </div>
-    </main>
-
-    <!-- GSAP CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 
     <script>
-      const progressBar = document.getElementById("progressBar");
-      const percent = document.getElementById("percent");
-      const preloader = document.getElementById("preloader");
-      const mainContent = document.getElementById("mainContent");
-      const panel = document.getElementById("panel");
-      const leftPanel = panel.querySelector(".left");
-      const rightPanel = panel.querySelector(".right");
+      var map = L.map("map", {
+        zoomControl: true,
+        attributionControl: false,
+        scrollWheelZoom: true,
+        dragging: true,
+        doubleClickZoom: true,
+        minZoom: 1,
+        maxZoom: 22,
+      });
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        opacity: 0.28,
+        maxZoom: 22,
+        maxNativeZoom: 19,
+      }).addTo(map);
 
-      let load = 0;
+      /* ── Sample Data ─────────────────────────────── */
+      var poles = [
+        {
+          id: 1,
+          code: "F13-246",
+          status: "completed",
+          completed_at: "Mar 12, 2026 2:14 PM",
+          lat: 14.539801,
+          lng: 121.109103,
+          collected: 23,
+          expected: 23,
+        },
+        {
+          id: 2,
+          code: "F13-247",
+          status: "completed",
+          completed_at: "Mar 13, 2026 9:40 AM",
+          lat: 14.539938,
+          lng: 121.108687,
+          collected: 17,
+          expected: 17,
+        },
+        {
+          id: 3,
+          code: "F13-248",
+          status: "pending",
+          completed_at: null,
+          lat: 14.540187,
+          lng: 121.108771,
+          collected: 0,
+          expected: 108,
+        },
+        {
+          id: 4,
+          code: "F13-249",
+          status: "not_started",
+          completed_at: null,
+          lat: 14.540399,
+          lng: 121.108129,
+          collected: 0,
+          expected: 38,
+        },
+        {
+          id: 5,
+          code: "F13-250",
+          status: "not_started",
+          completed_at: null,
+          lat: 14.540422,
+          lng: 121.108841,
+          collected: 0,
+          expected: 40,
+        },
+        {
+          id: 6,
+          code: "F13-251",
+          status: "canceled",
+          completed_at: null,
+          lat: 14.539891,
+          lng: 121.109655,
+          collected: 0,
+          expected: 30,
+        },
+      ];
 
-      gsap.set(panel, { autoAlpha: 0 });
-      gsap.set(mainContent, { autoAlpha: 0, scale: 1.04 });
+      var spans = [
+        {
+          id: 101,
+          code: "SP-246→247",
+          from: 1,
+          to: 2,
+          len: 23,
+          collected: 23,
+          status: "completed",
+          completed_at: "Mar 13, 2026 9:40 AM",
+          node: "NODE-01",
+          submitted_by: "Juan dela Cruz",
+          col_node: 1,
+          col_amp: 0,
+          col_ext: 1,
+          col_tsc: 0,
+          exp_node: 1,
+          exp_amp: 0,
+          exp_ext: 1,
+          exp_tsc: 0,
+        },
+        {
+          id: 102,
+          code: "SP-247→248",
+          from: 2,
+          to: 3,
+          len: 17,
+          collected: 17,
+          status: "completed",
+          completed_at: "Mar 13, 2026 10:15 AM",
+          node: "NODE-01",
+          submitted_by: "Maria Santos",
+          col_node: 0,
+          col_amp: 1,
+          col_ext: 0,
+          col_tsc: 0,
+          exp_node: 0,
+          exp_amp: 1,
+          exp_ext: 0,
+          exp_tsc: 0,
+        },
+        {
+          id: 103,
+          code: "SP-248→249",
+          from: 3,
+          to: 4,
+          len: 38,
+          collected: 0,
+          status: "pending",
+          completed_at: null,
+          node: "NODE-01",
+          submitted_by: null,
+          col_node: 0,
+          col_amp: 0,
+          col_ext: 0,
+          col_tsc: 0,
+          exp_node: 1,
+          exp_amp: 0,
+          exp_ext: 2,
+          exp_tsc: 1,
+        },
+        {
+          id: 104,
+          code: "SP-248→250",
+          from: 3,
+          to: 5,
+          len: 40,
+          collected: 0,
+          status: "not_started",
+          completed_at: null,
+          node: "NODE-01",
+          submitted_by: null,
+          col_node: 0,
+          col_amp: 0,
+          col_ext: 0,
+          col_tsc: 0,
+          exp_node: 0,
+          exp_amp: 1,
+          exp_ext: 1,
+          exp_tsc: 0,
+        },
+        {
+          id: 105,
+          code: "SP-248→251",
+          from: 3,
+          to: 6,
+          len: 30,
+          collected: 0,
+          status: "canceled",
+          completed_at: null,
+          node: "NODE-01",
+          submitted_by: "Pedro Reyes",
+          col_node: 0,
+          col_amp: 0,
+          col_ext: 0,
+          col_tsc: 0,
+          exp_node: 0,
+          exp_amp: 0,
+          exp_ext: 1,
+          exp_tsc: 0,
+        },
+      ];
 
-      function updateProgress(value) {
-        progressBar.style.width = value + "%";
-        percent.textContent = value + "%";
+      var currentPoleIds = [3, 4]; // currently active teardown poles
+
+      /* ── Color map ───────────────────────────────── */
+      var C = {
+        completed: {
+          fill: "#10b981",
+          border: "#059669",
+          text: "#fff",
+          badge: "background:#d1fae5;color:#065f46",
+        },
+        pending: {
+          fill: "#f59e0b",
+          border: "#d97706",
+          text: "#fff",
+          badge: "background:#fef3c7;color:#92400e",
+        },
+        not_started: {
+          fill: "#3b82f6",
+          border: "#2563eb",
+          text: "#fff",
+          badge: "background:#dbeafe;color:#1e40af",
+        },
+        canceled: {
+          fill: "#ef4444",
+          border: "#dc2626",
+          text: "#fff",
+          badge: "background:#fee2e2;color:#991b1b",
+        },
+      };
+      function gc(s) {
+        return C[s] || C.not_started;
       }
 
-      function fakeLoader() {
-        const interval = setInterval(() => {
-          let step = Math.floor(Math.random() * 9) + 3;
-          load += step;
+      var poleMap = {};
+      poles.forEach(function (p) {
+        poleMap[p.id] = p;
+      });
+      var bounds = [];
 
-          if (load >= 100) {
-            load = 100;
-            updateProgress(load);
-            clearInterval(interval);
-            playTeardown();
-          } else {
-            updateProgress(load);
-          }
-        }, 140);
-      }
+      /* ── Draw Spans ──────────────────────────────── */
+      spans.forEach(function (s) {
+        var fp = poleMap[s.from],
+          tp = poleMap[s.to];
+        if (!fp || !tp) return;
+        var c = gc(s.status);
+        var dash =
+          s.status === "not_started" || s.status === "canceled" ? "7,5" : null;
+        var opts = {
+          color: c.fill,
+          weight: 4,
+          opacity: s.status === "canceled" ? 0.5 : 0.88,
+        };
+        if (dash) opts.dashArray = dash;
 
-      function playTeardown() {
-        const tl = gsap.timeline();
+        var line = L.polyline(
+          [
+            [fp.lat, fp.lng],
+            [tp.lat, tp.lng],
+          ],
+          opts,
+        ).addTo(map);
 
-        tl.to(".loader-wrap", {
-          y: -18,
-          opacity: 0.85,
-          duration: 0.35,
-          ease: "power2.out",
-        })
+        var rec = s.len > 0 ? Math.round((s.collected / s.len) * 100) : 0;
+        var unrecNode = Math.max((s.exp_node || 0) - (s.col_node || 0), 0);
+        var unrecAmp = Math.max((s.exp_amp || 0) - (s.col_amp || 0), 0);
+        var unrecExt = Math.max((s.exp_ext || 0) - (s.col_ext || 0), 0);
+        var unrecTsc = Math.max((s.exp_tsc || 0) - (s.col_tsc || 0), 0);
+        var hasUnrec = unrecNode || unrecAmp || unrecExt || unrecTsc;
+        var hasComp = s.exp_node || s.exp_amp || s.exp_ext || s.exp_tsc;
 
-          .to(
-            ".progress-bar",
-            {
-              boxShadow:
-                "0 0 30px rgba(56,189,248,0.95), 0 0 60px rgba(37,99,235,0.6)",
-              duration: 0.25,
-            },
-            "<",
-          )
+        function compRow(label, col, exp) {
+          if (!exp) return "";
+          var ok = col >= exp;
+          return (
+            '<div class="tt-row">' +
+            '<span class="tt-label">' +
+            label +
+            "</span>" +
+            '<span class="tt-val" style="color:' +
+            (ok ? "#10b981" : "#f59e0b") +
+            '">' +
+            col +
+            " / " +
+            exp +
+            (ok ? " ✓" : " ⚠") +
+            "</span>" +
+            "</div>"
+          );
+        }
+        var unrecParts = [];
+        if (unrecNode) unrecParts.push("Node ×" + unrecNode);
+        if (unrecAmp) unrecParts.push("AMP ×" + unrecAmp);
+        if (unrecExt) unrecParts.push("EXT ×" + unrecExt);
+        if (unrecTsc) unrecParts.push("TSC ×" + unrecTsc);
 
-          .to(preloader, {
-            scale: 1.03,
-            duration: 0.45,
-            ease: "power2.inOut",
-          })
+        var ttHtml =
+          '<div class="tt">' +
+          '<div class="tt-title">📡 ' +
+          s.code +
+          "</div>" +
+          '<div class="tt-row"><span class="tt-label">Status</span><span class="tt-val"><span class="badge" style="' +
+          c.badge +
+          '">' +
+          s.status.replace(/_/g, " ") +
+          "</span></span></div>" +
+          '<div class="tt-row"><span class="tt-label">Node</span><span class="tt-val">' +
+          s.node +
+          "</span></div>" +
+          (s.submitted_by
+            ? '<div class="tt-row"><span class="tt-label">Submitted By</span><span class="tt-val">👤 ' +
+              s.submitted_by +
+              "</span></div>"
+            : "") +
+          '<div style="border-top:1px solid rgba(255,255,255,0.08);margin:7px 0 4px"></div>' +
+          '<div style="font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Cable</div>' +
+          '<div class="tt-row"><span class="tt-label">Span Length</span><span class="tt-val">' +
+          s.len +
+          " m</span></div>" +
+          '<div class="tt-row"><span class="tt-label">Collected</span><span class="tt-val">' +
+          s.collected +
+          " m</span></div>" +
+          '<div class="tt-row"><span class="tt-label">Recovery</span><span class="tt-val" style="color:' +
+          (rec >= 100 ? "#10b981" : rec > 50 ? "#f59e0b" : "#ef4444") +
+          '">' +
+          rec +
+          "%</span></div>" +
+          (hasComp
+            ? '<div style="border-top:1px solid rgba(255,255,255,0.08);margin:7px 0 4px"></div>' +
+              '<div style="font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Components</div>' +
+              compRow("Node", s.col_node || 0, s.exp_node || 0) +
+              compRow("Amplifier", s.col_amp || 0, s.exp_amp || 0) +
+              compRow("Extender", s.col_ext || 0, s.exp_ext || 0) +
+              compRow("TSC", s.col_tsc || 0, s.exp_tsc || 0)
+            : "") +
+          (hasUnrec
+            ? '<div style="border-top:1px solid rgba(239,68,68,0.3);margin:7px 0 4px"></div>' +
+              '<div style="font-size:10px;color:#ef4444;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">⚠ Unrecovered Equipment</div>' +
+              '<div class="tt-row"><span class="tt-label" style="color:#fca5a5">Items</span><span class="tt-val" style="color:#fca5a5">' +
+              unrecParts.join(" · ") +
+              "</span></div>"
+            : "") +
+          (s.completed_at
+            ? '<div style="border-top:1px solid rgba(255,255,255,0.08);margin:7px 0 4px"></div>' +
+              '<div class="tt-row"><span class="tt-label">Completed At</span><span class="tt-val">' +
+              s.completed_at +
+              "</span></div>"
+            : "") +
+          "</div>";
+        line.bindTooltip(ttHtml, {
+          sticky: true,
+          direction: "top",
+          opacity: 1,
+          className: "",
+          offset: [0, -4],
+        });
 
-          .set(panel, { autoAlpha: 1 })
-
-          .to(
-            preloader,
-            {
-              autoAlpha: 0,
-              duration: 0.35,
-              ease: "power2.out",
-            },
-            "-=0.15",
-          )
-
-          .fromTo(
-            leftPanel,
-            { xPercent: 0 },
-            { xPercent: -100, duration: 1.0, ease: "power4.inOut" },
-            "-=0.1",
-          )
-
-          .fromTo(
-            rightPanel,
-            { xPercent: 0 },
-            { xPercent: 100, duration: 1.0, ease: "power4.inOut" },
-            "<",
-          )
-
-          .to(
-            mainContent,
-            {
-              autoAlpha: 1,
-              scale: 1,
-              duration: 1,
-              ease: "power3.out",
-            },
-            "-=0.55",
-          )
-
-          .set(preloader, { display: "none" })
-          .set(panel, { display: "none" })
-          .set(document.body, { overflow: "auto" });
-      }
-
-      // Optional: intro animation
-      gsap.from(".loader-title", {
-        y: 30,
-        opacity: 0,
-        duration: 1,
-        ease: "power3.out",
+        /* Distance label */
+        var ml = (fp.lat + tp.lat) / 2,
+          mg = (fp.lng + tp.lng) / 2;
+        var distLabel = s.len + " meters";
+        L.marker([ml, mg], {
+          icon: L.divIcon({
+            className: "",
+            html:
+              '<span style="font:700 11px Inter,sans-serif;color:#111827;background:#fff;padding:3px 9px;border-radius:6px;white-space:nowrap;display:inline-block;box-shadow:0 1px 6px rgba(0,0,0,0.18);border:1px solid ' +
+              c.fill +
+              '44;">' +
+              distLabel +
+              "</span>",
+            iconSize: [80, 22],
+            iconAnchor: [40, 11],
+          }),
+          interactive: false,
+        }).addTo(map);
       });
 
-      gsap.from(".loader-sub", {
-        y: 15,
-        opacity: 0,
-        duration: 1,
-        delay: 0.15,
-        ease: "power3.out",
+      /* ── Draw Poles ──────────────────────────────── */
+      poles.forEach(function (p) {
+        var isCurrent = currentPoleIds.indexOf(p.id) >= 0;
+        var c = gc(p.status);
+        var fill = isCurrent ? "#0d47c9" : c.fill;
+        var border = isCurrent ? "#0a349e" : c.border;
+        var size = isCurrent ? 42 : 33;
+        var label = p.code.replace(/^[A-Z0-9]+-/, "");
+        var fs = size <= 33 ? "8px" : "9px";
+
+        var icon = L.divIcon({
+          className: "",
+          html:
+            '<div class="pole-circle" style="width:' +
+            size +
+            "px;height:" +
+            size +
+            "px;background:" +
+            fill +
+            ";border-color:" +
+            border +
+            ";color:" +
+            c.text +
+            ";font-size:" +
+            fs +
+            ";" +
+            (isCurrent
+              ? "box-shadow:0 0 0 5px rgba(13,71,201,0.22),0 3px 12px rgba(0,0,0,0.3);"
+              : "") +
+            '">' +
+            label +
+            "</div>",
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+
+        var rec =
+          p.expected > 0 ? Math.round((p.collected / p.expected) * 100) : 0;
+        var statusLabel = isCurrent
+          ? "In Progress (Current)"
+          : p.status.replace(/_/g, " ");
+        var badgeStyle = isCurrent
+          ? "background:#dbeafe;color:#1e3a8a"
+          : c.badge;
+        var ttHtml =
+          '<div class="tt">' +
+          '<div class="tt-title">🔌 ' +
+          p.code +
+          "</div>" +
+          '<div class="tt-row"><span class="tt-label">Status</span><span class="tt-val"><span class="badge" style="' +
+          badgeStyle +
+          '">' +
+          statusLabel +
+          "</span></span></div>" +
+          '<div class="tt-row"><span class="tt-label">Expected Cable</span><span class="tt-val">' +
+          p.expected +
+          " m</span></div>" +
+          '<div class="tt-row"><span class="tt-label">Cable Collected</span><span class="tt-val">' +
+          p.collected +
+          " m</span></div>" +
+          '<div class="tt-row"><span class="tt-label">Recovery</span><span class="tt-val">' +
+          rec +
+          "%</span></div>" +
+          (p.completed_at
+            ? '<div class="tt-row"><span class="tt-label">Completed At</span><span class="tt-val">' +
+              p.completed_at +
+              "</span></div>"
+            : "") +
+          "</div>";
+
+        L.marker([p.lat, p.lng], { icon: icon })
+          .addTo(map)
+          .bindTooltip(ttHtml, {
+            sticky: true,
+            direction: "top",
+            opacity: 1,
+            className: "",
+            offset: [0, -(size / 2) - 6],
+          });
+
+        bounds.push([p.lat, p.lng]);
       });
 
-      gsap.from(".progress-shell", {
-        y: 20,
-        opacity: 0,
-        duration: 1,
-        delay: 0.25,
-        ease: "power3.out",
-      });
-
-      gsap.from(".progress-meta", {
-        y: 20,
-        opacity: 0,
-        duration: 1,
-        delay: 0.35,
-        ease: "power3.out",
-      });
-
-      fakeLoader();
+      if (bounds.length)
+        map.fitBounds(L.latLngBounds(bounds), { padding: [65, 65] });
     </script>
   </body>
 </html>

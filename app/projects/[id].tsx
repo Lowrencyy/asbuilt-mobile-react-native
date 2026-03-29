@@ -82,6 +82,23 @@ export default function ProjectDetailScreen() {
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+
+  async function handleDownloadOffline() {
+    if (downloading || loadingNodes || nodes.length === 0) return;
+    setDownloading(true);
+    await Promise.allSettled(
+      nodes.map((node) =>
+        api.get(`/nodes/${node.id}/poles`).then(({ data }) => {
+          const poles: any[] = Array.isArray(data) ? data : data?.data ?? [];
+          return cacheSet(`poles_node_${node.id}`, poles);
+        }),
+      ),
+    );
+    setDownloading(false);
+    setDownloaded(true);
+  }
 
   useEffect(() => {
     const CACHE_KEY = `nodes_project_${id}`;
@@ -240,6 +257,25 @@ export default function ProjectDetailScreen() {
                     </Text>
                   </View>
                 </View>
+
+                {/* Download for offline button */}
+                <TouchableOpacity
+                  onPress={handleDownloadOffline}
+                  disabled={downloading || loadingNodes || nodes.length === 0}
+                  activeOpacity={0.8}
+                  style={[
+                    styles.downloadBtn,
+                    downloaded && styles.downloadBtnDone,
+                  ]}
+                >
+                  {downloading ? (
+                    <ActivityIndicator size={12} color="#ffffff" />
+                  ) : (
+                    <Text style={styles.downloadBtnText}>
+                      {downloaded ? "✓ Saved for Offline" : "↓ Download for Offline"}
+                    </Text>
+                  )}
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -748,5 +784,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#9CA3AF",
     fontWeight: "600",
+  },
+
+  downloadBtn: {
+    marginTop: 14,
+    alignSelf: "stretch",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.4)",
+    borderRadius: 20,
+    paddingVertical: 9,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 6,
+  },
+
+  downloadBtnDone: {
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
+
+  downloadBtnText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.5,
   },
 });
