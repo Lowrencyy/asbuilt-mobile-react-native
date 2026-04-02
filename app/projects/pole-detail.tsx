@@ -756,9 +756,6 @@ export default function PoleDetailScreen() {
   }
 
   const hasGps = !!(lat && lng);
-  const gpsReadyStrict =
-    gpsAccuracy !== null && gpsAccuracy <= REQUIRED_GPS_ACCURACY_METERS;
-
   const canSelectPair =
     (hasGps || poleLoading) &&
     !!photoBefore &&
@@ -977,14 +974,10 @@ export default function PoleDetailScreen() {
                       borderColor: `${accentColor}35`,
                       backgroundColor: "#FFFFFF",
                     },
-                pressed &&
-                  !gpsCapturing &&
-                  gpsReadyStrict &&
-                  styles.pressedDown,
-                !hasGps && !gpsReadyStrict && { opacity: 0.7 },
+                pressed && !gpsCapturing && styles.pressedDown,
               ]}
               onPress={captureGps}
-              disabled={gpsCapturing || (!hasGps && !gpsReadyStrict)}
+              disabled={gpsCapturing}
             >
               <View
                 style={[
@@ -1035,7 +1028,7 @@ export default function PoleDetailScreen() {
 
               <View style={styles.gpsArrowWrap}>
                 <Text style={[styles.gpsArrow, { color: accentColor }]}>
-                  {hasGps ? "✓" : gpsReadyStrict ? "›" : "…"}
+                  {hasGps ? "✓" : "›"}
                 </Text>
               </View>
             </Pressable>
