@@ -1,12 +1,12 @@
 import api from "@/lib/api";
-import { cacheSet } from "@/lib/cache";
+import { cacheGet, cacheSet } from "@/lib/cache";
 import { queuePush } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
-import { Stack, router, useLocalSearchParams } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -120,6 +120,10 @@ export default function TeardownComponentsScreen() {
     to_pole_gps_accuracy: string;
     destination_slot: string;
     destination_landmark: string;
+    from_pole_id: string;
+    from_pole_latitude: string;
+    from_pole_longitude: string;
+    from_pole_gps_captured_at: string;
   }>();
 
   const projFolder   = sanitize(params.project_name);
@@ -160,16 +164,30 @@ export default function TeardownComponentsScreen() {
   const [collectedPs,   setCollectedPs]   = useState(0);
   const [collectedPsh,  setCollectedPsh]  = useState(0);
 
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting,       setSubmitting]       = useState(false);
+  const [polePreSubmitted, setPolePreSubmitted] = useState(false);
 
   const recoveredNum = parseFloat(recoveredCable) || 0;
   const adjExpected  = declaredRuns > 0 && lengthMeters > 0 ? lengthMeters * actualRuns : expectedCable;
   const unrecovered  = Math.max(0, adjExpected - recoveredNum);
 
-  // ── On mount ──────────────────────────────────────────────────────────────
+  // ── Reload photos every time this screen gains focus ─────────────────────
+  // useFocusEffect ensures photos are reloaded from disk when the user
+  // navigates back to this screen (e.g. after going to a next span and back)
+  useFocusEffect(
+    useCallback(() => {
+      loadPhotos();
+    }, [])
+  );
+
+  // ── On mount only ─────────────────────────────────────────────────────────
   useEffect(() => {
-    loadPhotos();
     captureGps();
+    if (params.from_pole_id) {
+      cacheGet<boolean>(`pole_submitted_${params.from_pole_id}`)
+        .then((v) => setPolePreSubmitted(!!v))
+        .catch(() => {});
+    }
   }, []);
 
   async function loadPhotos() {
@@ -243,7 +261,7 @@ export default function TeardownComponentsScreen() {
 
   // ── Validation ────────────────────────────────────────────────────────────
   function canProceed() {
-    if (step === 0) return collectedAll !== null;
+    if (step === 0) return collectedAll !== null && recoveredCable.trim() !== "";
     // step 1 — all required photos + cable answered
     return !!photos.from_before && !!photos.from_tag &&
            !!photos.to_before && !!photos.to_after && !!photos.to_tag &&
@@ -270,7 +288,7 @@ export default function TeardownComponentsScreen() {
 
     const fields: Record<string, string> = {
       did_collect_all_cable:        collectedAll ? "1" : "0",
-      collected_cable:              String(collectedAll ? expectedCable : recoveredNum),
+      collected_cable:              String(recoveredNum),
       declared_runs:                String(declaredRuns),
       actual_runs:                  String(actualRuns),
       did_collect_components:       didCollectComponents,
@@ -303,15 +321,27 @@ export default function TeardownComponentsScreen() {
     if (params.destination_slot)     fields.destination_slot     = params.destination_slot;
     if (params.destination_landmark) fields.destination_landmark = params.destination_landmark;
     if (user?.name) fields.submitted_by = user.name;
-    if (user?.team) fields.team         = user.team;
+    // auth response stores team as `team_name`
+    const teamVal = user?.team_name ?? user?.team;
+    if (teamVal) fields.team = teamVal;
 
+    // Prefer GPS passed from pole-detail (captured while at the pole) to avoid
+    // recording office/upload-time location when the lineman submits offline later
+    const paramLat = params.from_pole_latitude;
+    const paramLng = params.from_pole_longitude;
     const gps = gpsRef.current;
-    if (gps) {
+    if (paramLat && paramLng) {
+      fields.gps_latitude  = paramLat;
+      fields.gps_longitude = paramLng;
+      fields.from_pole_latitude  = paramLat;
+      fields.from_pole_longitude = paramLng;
+      if (params.from_pole_gps_captured_at) fields.from_pole_gps_captured_at = params.from_pole_gps_captured_at;
+    } else if (gps) {
       fields.gps_latitude  = String(gps.lat);
       fields.gps_longitude = String(gps.lng);
       if (gps.acc != null) fields.gps_accuracy = gps.acc.toFixed(2);
-      fields.from_pole_latitude      = String(gps.lat);
-      fields.from_pole_longitude     = String(gps.lng);
+      fields.from_pole_latitude       = String(gps.lat);
+      fields.from_pole_longitude      = String(gps.lng);
       fields.from_pole_gps_captured_at = gps.capturedAt;
     }
     // fallback timestamp so the photo stamp always shows capture time, not upload time
@@ -332,11 +362,13 @@ export default function TeardownComponentsScreen() {
     return fields;
   }
 
-  function buildPhotoPaths(): Record<string, string> {
+  function buildPhotoPaths(skipFromPolePhotos = false): Record<string, string> {
     const paths: Record<string, string> = {};
-    if (photos.from_before) paths.from_before = photos.from_before.uri;
+    // from_before and from_tag are skipped when the from-pole was already
+    // submitted in a previous span — they're already stored on the server
+    if (!skipFromPolePhotos && photos.from_before) paths.from_before = photos.from_before.uri;
     if (photos.from_after)  paths.from_after  = photos.from_after.uri;
-    if (photos.from_tag)    paths.from_tag    = photos.from_tag.uri;
+    if (!skipFromPolePhotos && photos.from_tag)  paths.from_tag    = photos.from_tag.uri;
     if (photos.to_before)   paths.to_before   = photos.to_before.uri;
     if (photos.to_after)    paths.to_after    = photos.to_after.uri;
     if (photos.to_tag)      paths.to_tag      = photos.to_tag.uri;
@@ -353,6 +385,7 @@ export default function TeardownComponentsScreen() {
     if (!photos.to_after)    missing.push("Destination Pole — After photo");
     if (!photos.to_tag)      missing.push("Destination Pole — Pole Tag photo");
     if (collectedAll === null) missing.push("Cable collection answer");
+    if (recoveredCable.trim() === "") missing.push("Actual cable collected (meters)");
 
     if (missing.length > 0) {
       Alert.alert("Incomplete Teardown", `Cannot submit — the following are missing:\n\n• ${missing.join("\n• ")}`);
@@ -364,8 +397,14 @@ export default function TeardownComponentsScreen() {
     let fields: Record<string, string>;
     let photoPaths: Record<string, string>;
     try {
+      // Check if this from-pole was already submitted in a previous span.
+      // If so, skip re-uploading from_before and from_tag (already on server).
+      const poleAlreadySubmitted = params.from_pole_id
+        ? !!(await cacheGet<boolean>(`pole_submitted_${params.from_pole_id}`).catch(() => false))
+        : false;
+
       fields     = await buildFields();
-      photoPaths = buildPhotoPaths();
+      photoPaths = buildPhotoPaths(poleAlreadySubmitted);
     } catch {
       Alert.alert("Error", "Could not prepare submission. Please try again.");
       setSubmitting(false);
@@ -378,6 +417,16 @@ export default function TeardownComponentsScreen() {
     }
     for (const [fieldName, uri] of Object.entries(photoPaths)) {
       form.append(fieldName, { uri, name: `${fieldName}.jpg`, type: "image/jpeg" } as any);
+    }
+
+    // Bust caches NOW — before navigation — so returning to select-pair or node-logs
+    // never shows stale data
+    if (params.from_pole_id) {
+      cacheSet(`spans_pole_${params.from_pole_id}`, null).catch(() => {});
+    }
+    cacheSet("teardown_logs", null).catch(() => {});
+    if (params.node_id) {
+      cacheSet(`node_logs_${params.node_id}`, null).catch(() => {});
     }
 
     // Navigate immediately — don't make the user wait for upload
@@ -410,14 +459,47 @@ export default function TeardownComponentsScreen() {
     // Submit in background — component unmounts after replace, don't touch state
     api.post("/teardown-logs", form)
       .then(async () => {
-        await cacheSet("teardown_logs", null);
-        await FileSystem.deleteAsync(draftDir,     { idempotent: true }).catch(() => {});
-        await FileSystem.deleteAsync(poleDraftDir, { idempotent: true }).catch(() => {});
+        await FileSystem.deleteAsync(draftDir, { idempotent: true }).catch(() => {});
+        // poleDraftDir (pole_drafts) is intentionally kept — the same from-pole photos
+        // are reused for other spans connected to this pole (e.g. 1→3, 1→4)
+        // Bust node-logs cache so the new log appears immediately on next visit
+        if (params.node_id) {
+          cacheSet(`node_logs_${params.node_id}`, null).catch(() => {});
+        }
+        // Mark this from-pole as submitted — future spans from this pole will
+        // skip re-uploading from_before and from_tag (already on server)
+        if (params.from_pole_id) {
+          cacheSet(`pole_submitted_${params.from_pole_id}`, true).catch(() => {});
+        }
+        // Delete the `after` from pole_drafts so when the lineman re-opens
+        // pole-detail for this pole (for the next span), after starts blank
+        FileSystem.deleteAsync(poleDraftDir + `pole_${params.pole_code}_after.jpg`, { idempotent: true }).catch(() => {});
       })
       .catch(async (e: any) => {
         const status = e?.response?.status;
-        if (status === 409 || status === 422) return; // already submitted or bad data — skip queue
-        await queuePush({ fields, photoPaths, draftDir, poleDraftDir }).catch(() => {});
+        if (status === 409) {
+          // Already submitted — still mark as submitted and clean after
+          if (params.from_pole_id) {
+            cacheSet(`pole_submitted_${params.from_pole_id}`, true).catch(() => {});
+          }
+          return;
+        }
+        if (status === 422) {
+          // Validation rejected — show what failed so it can be reported
+          const errors = e?.response?.data?.errors;
+          const msg = errors
+            ? Object.values(errors).flat().join("\n")
+            : JSON.stringify(e?.response?.data ?? "Validation error");
+          Alert.alert("Submission Rejected (422)", `Server rejected the data:\n\n${msg}\n\nPlease screenshot this and report.`);
+          return;
+        }
+        // Network / server error — queue for retry when back online
+        await queuePush({
+          fields, photoPaths, draftDir, poleDraftDir,
+          fromPoleId:    params.from_pole_id || undefined,
+          nodeId:        params.node_id || undefined,
+          poleAfterPath: poleDraftDir + `pole_${params.pole_code}_after.jpg`,
+        }).catch(() => {});
       });
   }
 
@@ -492,7 +574,6 @@ export default function TeardownComponentsScreen() {
                   <View style={{ height: 4, backgroundColor: "#f59e0b" }} />
                   <View style={{ padding: 20 }}>
                     <Text style={styles.cardTitle}>Cable Collection</Text>
-                    <Text style={styles.cardSub}>Expected: {expectedCable}m</Text>
 
                     <Text style={{ color: "#374151", fontSize: 13, fontWeight: "600", marginBottom: 12 }}>
                       Were all cables collected?
@@ -521,6 +602,21 @@ export default function TeardownComponentsScreen() {
                         </Text>
                       </TouchableOpacity>
                     </View>
+
+                    {/* YES — input for actual collected amount */}
+                    {collectedAll === true && (
+                      <Animated.View entering={FadeInDown.duration(250)}>
+                        <Text style={styles.fieldLabel}>Actual cable collected (meters)</Text>
+                        <TextInput
+                          onChangeText={setRecoveredCable}
+                          value={recoveredCable}
+                          keyboardType="numeric"
+                          placeholder="Enter meters collected"
+                          placeholderTextColor="#9ca3af"
+                          style={styles.textInput}
+                        />
+                      </Animated.View>
+                    )}
 
                     {collectedAll === false && (
                       <Animated.View entering={FadeInDown.duration(250)}>
@@ -564,24 +660,6 @@ export default function TeardownComponentsScreen() {
                             style={styles.textInput}
                           />
 
-                          {recoveredCable !== "" && (() => {
-                            const rec   = Math.min(recoveredNum, adjExpected);
-                            const unrec = Math.max(0, adjExpected - rec);
-                            return (
-                              <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
-                                {[
-                                  { label: "Expected",    value: `${adjExpected}m`, color: "#6366f1" },
-                                  { label: "Recovered",   value: `${rec}m`,         color: "#10b981" },
-                                  { label: "Unrecovered", value: `${unrec}m`,        color: "#ef4444" },
-                                ].map((item) => (
-                                  <View key={item.label} style={styles.miniStatBox}>
-                                    <Text style={styles.miniStatLabel}>{item.label}</Text>
-                                    <Text style={[styles.miniStatValue, { color: item.color }]}>{item.value}</Text>
-                                  </View>
-                                ))}
-                              </View>
-                            );
-                          })()}
 
                           <Text style={styles.fieldLabel}>Reason</Text>
                           <TextInput
@@ -657,13 +735,13 @@ export default function TeardownComponentsScreen() {
                     <Text style={styles.cardSub}>All photos captured before submission</Text>
 
                     {[
-                      { label: "From Before",    photo: photos.from_before,  required: true  },
-                      { label: "From After",     photo: photos.from_after,   required: false },
-                      { label: "From Tag",       photo: photos.from_tag,     required: true  },
-                      { label: "To Before",      photo: photos.to_before,    required: true  },
-                      { label: "To After",       photo: photos.to_after,     required: true  },
-                      { label: "To Tag",         photo: photos.to_tag,       required: true  },
-                      ...(!collectedAll && cablePhoto ? [{ label: "Cable Photo", photo: cablePhoto, required: false }] : []),
+                      { label: "From Before",    photo: photos.from_before,  required: true,  preUploaded: polePreSubmitted },
+                      { label: "From After",     photo: photos.from_after,   required: false, preUploaded: false },
+                      { label: "From Tag",       photo: photos.from_tag,     required: true,  preUploaded: polePreSubmitted },
+                      { label: "To Before",      photo: photos.to_before,    required: true,  preUploaded: false },
+                      { label: "To After",       photo: photos.to_after,     required: true,  preUploaded: false },
+                      { label: "To Tag",         photo: photos.to_tag,       required: true,  preUploaded: false },
+                      ...(!collectedAll && cablePhoto ? [{ label: "Cable Photo", photo: cablePhoto, required: false, preUploaded: false }] : []),
                     ].map((item) => (
                       <View key={item.label} style={{ flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 10 }}>
                         <View style={{ width: 52, height: 52, borderRadius: 10, backgroundColor: "#f3f4f6", overflow: "hidden" }}>
@@ -674,8 +752,8 @@ export default function TeardownComponentsScreen() {
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 12, fontWeight: "700", color: "#111827" }}>{item.label}</Text>
-                          <Text style={{ fontSize: 10, fontWeight: "600", color: item.photo ? "#10b981" : item.required ? "#ef4444" : "#f59e0b" }}>
-                            {item.photo ? "✓ Captured" : item.required ? "✗ Missing — required" : "— Optional"}
+                          <Text style={{ fontSize: 10, fontWeight: "600", color: item.preUploaded ? "#6366f1" : item.photo ? "#10b981" : item.required ? "#ef4444" : "#f59e0b" }}>
+                            {item.preUploaded ? "↑ Pre-uploaded (skip re-send)" : item.photo ? "✓ Captured" : item.required ? "✗ Missing — required" : "— Optional"}
                           </Text>
                         </View>
                       </View>
@@ -688,24 +766,29 @@ export default function TeardownComponentsScreen() {
                   <View style={{ padding: 20 }}>
                     <Text style={[styles.cardTitle, { marginBottom: 12 }]}>Submission Summary</Text>
                     {[
-                      { label: "From Pole — Before",    ok: !!photos.from_before, required: true  },
-                      { label: "From Pole — Pole Tag",  ok: !!photos.from_tag,    required: true  },
-                      { label: "Dest. Pole — Before",   ok: !!photos.to_before,   required: true  },
-                      { label: "Dest. Pole — After",    ok: !!photos.to_after,    required: true  },
-                      { label: "Dest. Pole — Pole Tag", ok: !!photos.to_tag,      required: true  },
-                      { label: "Cable Collection",      ok: collectedAll !== null, required: true  },
+                      { label: "From Pole — Before",    ok: !!photos.from_before, required: true,  preUploaded: polePreSubmitted },
+                      { label: "From Pole — Pole Tag",  ok: !!photos.from_tag,    required: true,  preUploaded: polePreSubmitted },
+                      { label: "Dest. Pole — Before",   ok: !!photos.to_before,   required: true,  preUploaded: false },
+                      { label: "Dest. Pole — After",    ok: !!photos.to_after,    required: true,  preUploaded: false },
+                      { label: "Dest. Pole — Pole Tag", ok: !!photos.to_tag,      required: true,  preUploaded: false },
+                      { label: "Cable Collection",      ok: collectedAll !== null, required: true,  preUploaded: false },
                     ].map((row) => (
                       <View key={row.label} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                           <Text style={{ fontSize: 12, color: "#6b7280" }}>{row.label}</Text>
-                          {row.required && !row.ok && (
+                          {row.required && !row.ok && !row.preUploaded && (
                             <View style={{ backgroundColor: "#fee2e2", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 }}>
                               <Text style={{ fontSize: 8, color: "#dc2626", fontWeight: "800" }}>REQUIRED</Text>
                             </View>
                           )}
+                          {row.preUploaded && (
+                            <View style={{ backgroundColor: "#ede9fe", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 }}>
+                              <Text style={{ fontSize: 8, color: "#6366f1", fontWeight: "800" }}>SKIP</Text>
+                            </View>
+                          )}
                         </View>
-                        <Text style={{ color: row.ok ? "#10b981" : row.required ? "#ef4444" : "#f59e0b", fontWeight: "700", fontSize: 12 }}>
-                          {row.ok ? "✓ Ready" : row.required ? "✗ Missing" : "— Optional"}
+                        <Text style={{ color: row.preUploaded ? "#6366f1" : row.ok ? "#10b981" : row.required ? "#ef4444" : "#f59e0b", fontWeight: "700", fontSize: 12 }}>
+                          {row.preUploaded ? "↑ Pre-uploaded" : row.ok ? "✓ Ready" : row.required ? "✗ Missing" : "— Optional"}
                         </Text>
                       </View>
                     ))}

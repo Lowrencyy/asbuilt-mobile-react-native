@@ -43,7 +43,11 @@ const deliveries = [
     rateCheck: "$950",
     rateCheckPerMile: "$3.80/mi",
     approved: false,
-    totalNodes: 12, totalCable: "450m", totalAmplifier: 3, totalTsc: 2, totalPowerSupply: 4,
+    totalNodes: 12,
+    totalCable: "450m",
+    totalAmplifier: 3,
+    totalTsc: 2,
+    totalPowerSupply: 4,
   },
   {
     id: "2",
@@ -64,7 +68,11 @@ const deliveries = [
     rateCheck: "$1180",
     rateCheckPerMile: "$4.30/mi",
     approved: false,
-    totalNodes: 8, totalCable: "320m", totalAmplifier: 2, totalTsc: 1, totalPowerSupply: 3,
+    totalNodes: 8,
+    totalCable: "320m",
+    totalAmplifier: 2,
+    totalTsc: 1,
+    totalPowerSupply: 3,
   },
   {
     id: "3",
@@ -85,10 +93,13 @@ const deliveries = [
     rateCheck: "$1400",
     rateCheckPerMile: "$4.70/mi",
     approved: true,
-    totalNodes: 15, totalCable: "600m", totalAmplifier: 5, totalTsc: 3, totalPowerSupply: 6,
+    totalNodes: 15,
+    totalCable: "600m",
+    totalAmplifier: 5,
+    totalTsc: 3,
+    totalPowerSupply: 6,
   },
 ];
-
 
 const truckHtml = `
 <!DOCTYPE html>
@@ -263,13 +274,27 @@ const truckHtml = `
 
 function getPHT() {
   const now = new Date();
-  const phtMs = now.getTime() + (now.getTimezoneOffset() * 60 * 1000) + (8 * 60 * 60 * 1000);
+  const phtMs =
+    now.getTime() + now.getTimezoneOffset() * 60 * 1000 + 8 * 60 * 60 * 1000;
   return new Date(phtMs);
 }
 function getPHTDate() {
   const p = getPHT();
-  const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
   return `${days[p.getDay()]}, ${months[p.getMonth()]} ${p.getDate()}, ${p.getFullYear()}`;
 }
 function getPHTTime() {
@@ -283,14 +308,24 @@ export default function DeliveryScreen() {
   const [selected, setSelected] = useState<(typeof deliveries)[0] | null>(null);
   const [remarks, setRemarks] = useState("");
   const [proofImage, setProofImage] = useState<string | null>(null);
-  const [editedQty, setEditedQty] = useState({ nodes: "", cable: "", amplifier: "", tsc: "", powerSupply: "" });
+  const [editedQty, setEditedQty] = useState({
+    nodes: "",
+    cable: "",
+    amplifier: "",
+    tsc: "",
+    powerSupply: "",
+  });
 
-  const isWarehouse = currentUser.role === "warehouse" || currentUser.role === "pm";
+  const isWarehouse =
+    currentUser.role === "warehouse" || currentUser.role === "pm";
 
   async function handlePickImage() {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
-      Alert.alert("Permission Required", "Camera access is needed to attach proof of delivery.");
+      Alert.alert(
+        "Permission Required",
+        "Camera access is needed to attach proof of delivery.",
+      );
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
@@ -320,7 +355,10 @@ export default function DeliveryScreen() {
 
   function handleApprove() {
     if (!proofImage) {
-      Alert.alert("Proof Required", "Please attach an image as proof of delivery.");
+      Alert.alert(
+        "Proof Required",
+        "Please attach an image as proof of delivery.",
+      );
       return;
     }
     Alert.alert("Approved!", `${selected?.nodeId} has been approved.`, [
@@ -331,22 +369,34 @@ export default function DeliveryScreen() {
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       {/* Approval Modal — slide up sheet */}
-      <Modal visible={modalVisible} animationType="slide" transparent statusBarTranslucent>
+      <Modal
+        visible={modalVisible}
+        animationType="slide"
+        transparent
+        statusBarTranslucent
+      >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={styles.modalOverlay}
         >
-          <Pressable style={styles.modalBackdrop} onPress={() => setModalVisible(false)} />
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setModalVisible(false)}
+          />
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle} />
 
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               {/* Header */}
               <View style={styles.modalHeader}>
                 <View>
                   <Text style={styles.modalTitle}>Delivery Approval</Text>
-                  <Text style={styles.modalSubtitle}>{selected?.nodeId}  ·  {selected?.subcontractor}</Text>
+                  <Text style={styles.modalSubtitle}>
+                    {selected?.nodeId} · {selected?.subcontractor}
+                  </Text>
                 </View>
                 <View style={styles.modalBadge}>
                   <Text style={styles.modalBadgeText}>Pending</Text>
@@ -356,12 +406,18 @@ export default function DeliveryScreen() {
               {/* Info rows */}
               <View style={styles.infoCard}>
                 {[
-                  { label: "Pickup",    value: selected?.pickupCity },
+                  { label: "Pickup", value: selected?.pickupCity },
                   { label: "Warehouse", value: selected?.dropoffCity },
-                  { label: "Date",      value: getPHTDate() },
-                  { label: "Time",      value: getPHTTime() },
+                  { label: "Date", value: getPHTDate() },
+                  { label: "Time", value: getPHTTime() },
                 ].map(({ label, value }, i, arr) => (
-                  <View key={label} style={[styles.infoRow, i === arr.length - 1 && { borderBottomWidth: 0 }]}>
+                  <View
+                    key={label}
+                    style={[
+                      styles.infoRow,
+                      i === arr.length - 1 && { borderBottomWidth: 0 },
+                    ]}
+                  >
                     <Text style={styles.infoLabel}>{label}</Text>
                     <Text style={styles.infoValue}>{value}</Text>
                   </View>
@@ -373,24 +429,59 @@ export default function DeliveryScreen() {
               <View style={styles.infoCard}>
                 <View style={[styles.infoRow, styles.tableHead]}>
                   <Text style={[styles.thCell, { flex: 3 }]}>Item</Text>
-                  <Text style={[styles.thCell, { flex: 1, textAlign: "center" }]}>Unit</Text>
-                  <Text style={[styles.thCell, { flex: 1.2, textAlign: "right" }]}>Qty</Text>
+                  <Text
+                    style={[styles.thCell, { flex: 1, textAlign: "center" }]}
+                  >
+                    Unit
+                  </Text>
+                  <Text
+                    style={[styles.thCell, { flex: 1.2, textAlign: "right" }]}
+                  >
+                    Qty
+                  </Text>
                 </View>
                 {[
-                  { key: "nodes",       label: "Node",         unit: "pcs",  field: "nodes"       },
-                  { key: "cable",       label: "Cable",        unit: "m",    field: "cable"       },
-                  { key: "amplifier",   label: "Amplifier",    unit: "pcs",  field: "amplifier"   },
-                  { key: "tsc",         label: "TSC",          unit: "pcs",  field: "tsc"         },
-                  { key: "powerSupply", label: "Power Supply", unit: "pcs",  field: "powerSupply" },
+                  { key: "nodes", label: "Node", unit: "pcs", field: "nodes" },
+                  { key: "cable", label: "Cable", unit: "m", field: "cable" },
+                  {
+                    key: "amplifier",
+                    label: "Amplifier",
+                    unit: "pcs",
+                    field: "amplifier",
+                  },
+                  { key: "tsc", label: "TSC", unit: "pcs", field: "tsc" },
+                  {
+                    key: "powerSupply",
+                    label: "Power Supply",
+                    unit: "pcs",
+                    field: "powerSupply",
+                  },
                 ].map((row, i, arr) => (
-                  <View key={row.key} style={[styles.infoRow, i === arr.length - 1 && { borderBottomWidth: 0 }]}>
-                    <Text style={[styles.infoLabel, { flex: 3 }]}>{row.label}</Text>
-                    <Text style={[styles.infoMuted, { flex: 1, textAlign: "center" }]}>{row.unit}</Text>
+                  <View
+                    key={row.key}
+                    style={[
+                      styles.infoRow,
+                      i === arr.length - 1 && { borderBottomWidth: 0 },
+                    ]}
+                  >
+                    <Text style={[styles.infoLabel, { flex: 3 }]}>
+                      {row.label}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.infoMuted,
+                        { flex: 1, textAlign: "center" },
+                      ]}
+                    >
+                      {row.unit}
+                    </Text>
                     <TextInput
                       style={styles.qtyInput}
                       keyboardType="numeric"
                       value={editedQty[row.field as keyof typeof editedQty]}
-                      onChangeText={(v) => setEditedQty((p) => ({ ...p, [row.field]: v }))}
+                      onChangeText={(v) =>
+                        setEditedQty((p) => ({ ...p, [row.field]: v }))
+                      }
                     />
                   </View>
                 ))}
@@ -398,20 +489,30 @@ export default function DeliveryScreen() {
 
               {/* Proof */}
               <Text style={styles.sectionLabel}>Proof of Delivery</Text>
-              <TouchableOpacity style={styles.imagePicker} onPress={handlePickImage} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.imagePicker}
+                onPress={handlePickImage}
+                activeOpacity={0.8}
+              >
                 {proofImage ? (
-                  <Image source={{ uri: proofImage }} style={styles.imagePreviewFull} resizeMode="cover" />
+                  <Image
+                    source={{ uri: proofImage }}
+                    style={styles.imagePreviewFull}
+                    resizeMode="cover"
+                  />
                 ) : (
                   <View style={styles.imageEmpty}>
                     <Text style={styles.imageEmptyIcon}>📷</Text>
-                    <Text style={styles.imageEmptyText}>Take a photo or choose from gallery</Text>
+                    <Text style={styles.imageEmptyText}>
+                      Take a photo or choose from gallery
+                    </Text>
                   </View>
                 )}
               </TouchableOpacity>
 
               {/* Remarks */}
               <Text style={styles.sectionLabel}>
-                Remarks  <Text style={styles.optionalTag}>optional</Text>
+                Remarks <Text style={styles.optionalTag}>optional</Text>
               </Text>
               <TextInput
                 style={styles.remarksInput}
@@ -424,14 +525,20 @@ export default function DeliveryScreen() {
 
               {/* Buttons */}
               <View style={styles.modalActions}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setModalVisible(false)}
+                >
                   <Text style={styles.cancelBtnText}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.approveBtn, !proofImage && styles.approveBtnDisabled]}
+                  style={[
+                    styles.approveBtn,
+                    !proofImage && styles.approveBtnDisabled,
+                  ]}
                   onPress={handleApprove}
                 >
-                  <Text style={styles.approveBtnText}>✓  Approve</Text>
+                  <Text style={styles.approveBtnText}>✓ Approve</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -458,7 +565,10 @@ export default function DeliveryScreen() {
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => (
           <Pressable
-            style={({ pressed }) => [styles.loadCard, pressed && { opacity: 0.7 }]}
+            style={({ pressed }) => [
+              styles.loadCard,
+              pressed && { opacity: 0.7 },
+            ]}
             onPress={() =>
               router.push({
                 pathname: "/deliveries/[id]",
@@ -504,7 +614,9 @@ export default function DeliveryScreen() {
                   ["POWERSUPPLY", item.totalPowerSupply, "PCS"],
                 ].map(([label, val, unit]) => (
                   <View key={label} style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>{label} ({unit}):</Text>
+                    <Text style={styles.summaryLabel}>
+                      {label} ({unit}):
+                    </Text>
                     <Text style={styles.summaryValue}>{val ?? "—"}</Text>
                   </View>
                 ))}
@@ -512,8 +624,18 @@ export default function DeliveryScreen() {
             </View>
 
             <View style={styles.cardFooter}>
-              <View style={[styles.approvalBadge, item.approved ? styles.approvedBadge : styles.pendingBadge]}>
-                <Text style={[styles.approvalText, item.approved ? styles.approvedText : styles.pendingText]}>
+              <View
+                style={[
+                  styles.approvalBadge,
+                  item.approved ? styles.approvedBadge : styles.pendingBadge,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.approvalText,
+                    item.approved ? styles.approvedText : styles.pendingText,
+                  ]}
+                >
                   {item.approved ? "Approved" : "Awaiting Approval"}
                 </Text>
               </View>
@@ -774,11 +896,22 @@ const styles = StyleSheet.create({
     borderBottomColor: "#F1F5F9",
   },
   infoLabel: { fontSize: 13, color: "#64748B", fontWeight: "600", flex: 2 },
-  infoValue: { fontSize: 13, color: "#0F172A", fontWeight: "700", flex: 3, textAlign: "right" },
+  infoValue: {
+    fontSize: 13,
+    color: "#0F172A",
+    fontWeight: "700",
+    flex: 3,
+    textAlign: "right",
+  },
   infoMuted: { fontSize: 12, color: "#94A3B8", fontWeight: "500" },
 
   tableHead: { backgroundColor: "#F8FAFC" },
-  thCell: { fontSize: 11, fontWeight: "800", color: "#94A3B8", letterSpacing: 0.5 },
+  thCell: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#94A3B8",
+    letterSpacing: 0.5,
+  },
 
   qtyInput: {
     flex: 1.2,
@@ -834,8 +967,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
   },
-  detailLabel: { fontSize: 12, color: "#94A3B8", fontWeight: "700", letterSpacing: 0.3 },
-  detailValue: { fontSize: 13, color: "#1E293B", fontWeight: "700", flexShrink: 1, textAlign: "right", marginLeft: 12 },
+  detailLabel: {
+    fontSize: 12,
+    color: "#94A3B8",
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  detailValue: {
+    fontSize: 13,
+    color: "#1E293B",
+    fontWeight: "700",
+    flexShrink: 1,
+    textAlign: "right",
+    marginLeft: 12,
+  },
 
   verifyRow: {
     flexDirection: "row",

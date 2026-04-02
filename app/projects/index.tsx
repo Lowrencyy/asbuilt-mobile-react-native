@@ -1,15 +1,14 @@
 import { router } from "expo-router";
 import React from "react";
-import {
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-type ProjectStatus = "In Progress" | "Pending" | "Ongoing" | "Priority" | "Queued";
+type ProjectStatus =
+  | "In Progress"
+  | "Pending"
+  | "Ongoing"
+  | "Priority"
+  | "Queued";
 
 type Project = {
   id: string;
@@ -104,12 +103,7 @@ function ProjectCard({ item }: { item: Project }) {
   return (
     <View style={styles.cardOuter}>
       {/* Floating colored header — absolute, sticks FLOAT_ABOVE px above the card */}
-      <View
-        style={[
-          styles.cardHeader,
-          { backgroundColor: colors.header },
-        ]}
-      />
+      <View style={[styles.cardHeader, { backgroundColor: colors.header }]} />
 
       {/* White card body */}
       <View style={styles.card}>

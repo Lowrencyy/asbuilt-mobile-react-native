@@ -1,7 +1,7 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -14,138 +14,170 @@ import {
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const n2 = (v: unknown) => (v == null || v === "" ? 0 : Number(v) || 0);
-const fmtLen = (v: number) => (v ? `${v.toLocaleString()} m` : "—");
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TeardownLog = {
   id: number;
-  created_at: string;
   status: string;
-  pole_span_id?: number;
-  to_pole_id?: number;
-  // cable — backend uses collected_cable (or recovered_cable if partial)
+  team?: string;
   collected_cable?: number;
-  recovered_cable?: number;
-  actual_runs?: number;
-  cable_reason?: string;
-  destination_slot?: string;
-  destination_landmark?: string;
-  collected_node?: number;
-  collected_amplifier?: number;
-  collected_extender?: number;
-  collected_tsc?: number;
-  collected_powersupply?: number;
-  collected_powersupply_housing?: number;
-  // Laravel eager-loaded relations
   pole_span?: {
     pole_span_code?: string;
-    from_pole?: { pole_code: string; pole_name?: string };
-    to_pole?:   { pole_code: string; pole_name?: string };
+    from_pole?: { pole_code: string };
+    to_pole?:   { pole_code: string };
   };
-  span?: {
-    pole_span_code?: string;
-    from_pole?: { pole_code: string; pole_name?: string };
-    to_pole?:   { pole_code: string; pole_name?: string };
-  };
-  to_pole?:       { pole_code: string; pole_name?: string };
-  to_pole_code?:  string;
-  pole?:          { pole_code: string; pole_name?: string };
-  from_pole?:     { pole_code: string; pole_name?: string };
-  from_pole_code?: string;
-  node?: { node_id: string; node_name?: string; city?: string; province?: string };
-  project?: { name?: string };
+  node?: { id: number; node_id: string; node_name?: string; city?: string; province?: string };
+  project?: { id: number; name?: string; project_code?: string };
 };
 
-// ─── Status badge ─────────────────────────────────────────────────────────────
-
-const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  pending:   { label: "Pending",   color: "#d97706", bg: "#fef3c7" },
-  submitted: { label: "Submitted", color: "#0d47c9", bg: "#eef3ff" },
-  done:      { label: "Done",      color: "#059669", bg: "#d1fae5" },
-  approved:  { label: "Approved",  color: "#059669", bg: "#d1fae5" },
-  rejected:  { label: "Rejected",  color: "#dc2626", bg: "#fee2e2" },
-  draft:     { label: "Draft",     color: "#6b7280", bg: "#f3f4f6" },
+type NodeGroup = {
+  node_id: string;
+  node_db_id: number;
+  node_name?: string;
+  city?: string;
+  province?: string;
+  total: number;
+  approved: number;
+  logs: TeardownLog[];
 };
 
-function StatusBadge({ code }: { code: string }) {
-  const m = STATUS_META[code] ?? { label: code, color: "#6b7280", bg: "#f3f4f6" };
-  return (
-    <View style={{ borderRadius: 99, paddingHorizontal: 9, paddingVertical: 3, backgroundColor: m.bg }}>
-      <Text style={{ fontSize: 10, fontWeight: "800", color: m.color }}>{m.label}</Text>
-    </View>
-  );
+type ProjectGroup = {
+  project_id: number;
+  project_name: string;
+  nodes: NodeGroup[];
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const n2 = (v: unknown) => (v == null || v === "" ? 0 : Number(v) || 0);
+
+function groupLogs(logs: TeardownLog[]): ProjectGroup[] {
+  const projectMap = new Map<number, ProjectGroup>();
+
+  for (const log of logs) {
+    const pid    = log.project?.id ?? 0;
+    const pname  = log.project?.name ?? log.project?.project_code ?? "Unknown Project";
+    const ndbid  = log.node?.id ?? 0;
+    const nid    = log.node?.node_id ?? "Unknown Node";
+    const nname  = log.node?.node_name;
+    const city   = log.node?.city;
+    const prov   = log.node?.province;
+
+    if (!projectMap.has(pid)) {
+      projectMap.set(pid, { project_id: pid, project_name: pname, nodes: [] });
+    }
+    const proj = projectMap.get(pid)!;
+
+    let nodeGroup = proj.nodes.find((n) => n.node_id === nid);
+    if (!nodeGroup) {
+      nodeGroup = { node_id: nid, node_db_id: ndbid, node_name: nname, city, province: prov, total: 0, approved: 0, logs: [] };
+      proj.nodes.push(nodeGroup);
+    }
+    nodeGroup.logs.push(log);
+    nodeGroup.total++;
+    if (log.status === "approved" || log.status === "done") nodeGroup.approved++;
+  }
+
+  return Array.from(projectMap.values());
 }
 
-function StatCell({ lbl, val, color }: { lbl: string; val: string; color: string }) {
-  return (
-    <View style={{ alignItems: "center", flex: 1 }}>
-      <Text style={{ fontSize: 13, fontWeight: "900", color }}>{val}</Text>
-      <Text style={{ fontSize: 9, color: "#9ca3af", fontWeight: "700", textTransform: "uppercase" }}>{lbl}</Text>
-    </View>
-  );
-}
+// ─── Node Row ─────────────────────────────────────────────────────────────────
 
-// ─── Log Card ─────────────────────────────────────────────────────────────────
-
-function LogCard({ log, delay }: { log: TeardownLog; delay: number }) {
-  const sm = STATUS_META[log.status] ?? STATUS_META.submitted;
-
-  const fromCode = log.pole_span?.from_pole?.pole_code ?? log.span?.from_pole?.pole_code ?? log.pole?.pole_code ?? log.from_pole?.pole_code ?? log.from_pole_code ?? "—";
-  const toCode   = log.pole_span?.to_pole?.pole_code  ?? log.span?.to_pole?.pole_code   ?? log.to_pole?.pole_code ?? log.to_pole_code ?? "—";
-  const spanCode = log.pole_span?.pole_span_code ?? log.span?.pole_span_code ?? null;
-  const nodeId   = log.node?.node_id ?? "";
-
-  const cable = n2(log.collected_cable ?? log.recovered_cable);
-  const node  = n2(log.collected_node);
-  const amp   = n2(log.collected_amplifier);
-  const ext   = n2(log.collected_extender);
-  const tsc   = n2(log.collected_tsc);
-  const ps    = n2(log.collected_powersupply);
+function NodeRow({ node, projectName, accent, delay }: {
+  node: NodeGroup;
+  projectName: string;
+  accent: string;
+  delay: number;
+}) {
+  const pct      = node.total > 0 ? Math.round((node.approved / node.total) * 100) : 0;
+  const barColor = pct === 100 ? "#059669" : accent;
+  const cable    = node.logs.reduce((s, l) => s + n2(l.collected_cable), 0);
 
   return (
-    <Animated.View entering={FadeInDown.delay(delay).springify()} style={styles.card}>
-      <View style={{ height: 3, backgroundColor: sm.color }} />
+    <Animated.View entering={FadeInDown.delay(delay).springify()}>
+      <TouchableOpacity
+        activeOpacity={0.82}
+        style={styles.nodeCard}
+        onPress={() =>
+          router.push({
+            pathname: "/teardown/node-logs" as any,
+            params: {
+              node_id:      node.node_id,
+              node_name:    node.node_name ?? "",
+              city:         node.city ?? "",
+              province:     node.province ?? "",
+              project_name: projectName,
+              accent,
+            },
+          })
+        }
+      >
+        {/* Accent bar */}
+        <View style={[styles.nodeAccent, { backgroundColor: accent }]} />
 
-      <TouchableOpacity activeOpacity={0.75} onPress={() => router.push({ pathname: "/teardown/log-detail", params: { id: String(log.id) } } as any)}>
-        <View style={{ padding: 14 }}>
-          <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 15, fontWeight: "900", color: "#111827" }}>
-                {fromCode}  →  {toCode}
-              </Text>
-              {spanCode ? (
-                <Text style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>Span: {spanCode}</Text>
-              ) : null}
-              {nodeId ? (
-                <Text style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>Node: {nodeId}</Text>
-              ) : null}
-            </View>
-            <View style={{ alignItems: "flex-end", gap: 4 }}>
-              <StatusBadge code={log.status} />
-              {log.destination_slot ? (
-                <Text style={{ fontSize: 10, color: "#9ca3af", fontWeight: "600" }}>
-                  Slot: {log.destination_slot}
+        <View style={styles.nodeBody}>
+          <View style={styles.nodeTop}>
+            <View style={styles.nodeLeft}>
+              <Text style={styles.nodeId}>{node.node_id}</Text>
+              {node.node_name ? <Text style={styles.nodeName}>{node.node_name}</Text> : null}
+              {node.city ? (
+                <Text style={styles.nodeCity}>
+                  {node.city}{node.province ? `, ${node.province}` : ""}
                 </Text>
               ) : null}
             </View>
+            <View style={styles.nodeRight}>
+              <Text style={[styles.nodePct, { color: barColor }]}>{pct}%</Text>
+              <Text style={styles.nodeSpans}>{node.approved}/{node.total} spans</Text>
+              {cable > 0 ? <Text style={styles.nodeCable}>{cable.toLocaleString()} m</Text> : null}
+            </View>
           </View>
 
-          <View style={{ flexDirection: "row", borderTopWidth: 1, borderTopColor: "#f3f4f6", paddingTop: 10, gap: 4 }}>
-            <StatCell lbl="Cable" val={fmtLen(cable)} color="#166534" />
-            <StatCell lbl="Node"  val={String(node)}  color="#0d47c9" />
-            <StatCell lbl="Amp"   val={String(amp)}   color="#10b981" />
-            <StatCell lbl="Ext"   val={String(ext)}   color="#6366f1" />
-            <StatCell lbl="TSC"   val={String(tsc)}   color="#f59e0b" />
-            <StatCell lbl="PS"    val={String(ps)}     color="#ec4899" />
+          {/* Progress bar */}
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${pct}%` as any, backgroundColor: barColor }]} />
           </View>
         </View>
-      </TouchableOpacity>
 
+        <Text style={styles.nodeArrow}>›</Text>
+      </TouchableOpacity>
     </Animated.View>
+  );
+}
+
+// ─── Project Section ──────────────────────────────────────────────────────────
+
+const PROJECT_ACCENTS = ["#0d47c9", "#0A5C3B", "#7c3aed", "#0e7490", "#b45309", "#be123c"];
+
+function ProjectSection({ group, colorIdx, delay }: {
+  group: ProjectGroup;
+  colorIdx: number;
+  delay: number;
+}) {
+  const accent     = PROJECT_ACCENTS[colorIdx % PROJECT_ACCENTS.length];
+  const totalLogs  = group.nodes.reduce((s, n) => s + n.total, 0);
+  const doneLogs   = group.nodes.reduce((s, n) => s + n.approved, 0);
+
+  return (
+    <View style={styles.projectSection}>
+      <View style={[styles.projectHeader, { borderLeftColor: accent }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.projectName}>{group.project_name}</Text>
+          <Text style={styles.projectSub}>
+            {group.nodes.length} node{group.nodes.length !== 1 ? "s" : ""} · {doneLogs}/{totalLogs} spans approved
+          </Text>
+        </View>
+      </View>
+      {group.nodes.map((node, i) => (
+        <NodeRow
+          key={node.node_id}
+          node={node}
+          projectName={group.project_name}
+          accent={accent}
+          delay={delay + i * 50}
+        />
+      ))}
+    </View>
   );
 }
 
@@ -155,92 +187,107 @@ export default function TasksScreen() {
   const [logs,       setLogs]       = useState<TeardownLog[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error,      setError]      = useState<string | null>(null);
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
   async function load() {
+    setError(null);
     const cached = await cacheGet<TeardownLog[]>("teardown_logs");
     if (cached?.length) { setLogs(cached); setLoading(false); }
 
     try {
       const { data } = await api.get("/teardown-logs?per_page=500");
-      const fresh = data.data ?? data ?? [];
+      const fresh: TeardownLog[] = data.data ?? data ?? [];
       cacheSet("teardown_logs", fresh);
       setLogs(fresh);
-    } catch { /* keep showing cached */ }
-    finally { setLoading(false); setRefreshing(false); }
+    } catch (e: any) {
+      setError(e?.response?.data?.message ?? e?.message ?? "Network error");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }
 
-  const totalCable = useMemo(() => logs.reduce((s, r) => s + n2(r.recovered_cable), 0), [logs]);
-  const doneCount  = logs.filter(s => s.status === "done" || s.status === "approved").length;
-
-  const listHeader = (
-    <>
-      <View style={styles.topCard}>
-        <Text style={styles.title}>Daily Tasks</Text>
-      </View>
-
-      <View style={styles.totalCard}>
-        <View style={styles.totalRow}>
-          <View style={styles.totalBox}>
-            <Text style={styles.totalValue}>{logs.length}</Text>
-            <Text style={styles.totalLabel}>Spans Done</Text>
-          </View>
-          <View style={styles.totalBox}>
-            <Text style={styles.totalValue}>{fmtLen(totalCable)}</Text>
-            <Text style={styles.totalLabel}>Cable Recovered</Text>
-          </View>
-        </View>
-        <View style={styles.totalRow}>
-          <View style={styles.totalBox}>
-            <Text style={styles.totalValue}>{doneCount}</Text>
-            <Text style={styles.totalLabel}>Approved</Text>
-          </View>
-          <View style={styles.totalBox}>
-            <Text style={styles.totalValue}>{logs.length - doneCount}</Text>
-            <Text style={styles.totalLabel}>Pending</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.summaryRow}>
-        <Text style={styles.summaryTitle}>Teardown Logs</Text>
-        <Text style={styles.summaryCount}>{logs.length} record{logs.length !== 1 ? "s" : ""}</Text>
-      </View>
-
-      {loading && (
-        <View style={{ backgroundColor: "#fff", borderRadius: 20, paddingVertical: 48, alignItems: "center", marginBottom: 12 }}>
-          <ActivityIndicator color="#0d47c9" />
-          <Text style={{ color: "#9ca3af", marginTop: 10, fontSize: 12 }}>Loading tasks…</Text>
-        </View>
-      )}
-
-      {!loading && logs.length === 0 && (
-        <View style={styles.emptyCard}>
-          <Text style={{ fontSize: 40 }}>📋</Text>
-          <Text style={styles.emptyTitle}>No tasks yet</Text>
-          <Text style={styles.emptyText}>No teardown logs found.</Text>
-        </View>
-      )}
-    </>
-  );
+  const groups     = groupLogs(logs);
+  const totalSpans = logs.length;
+  const totalCable = logs.reduce((s, l) => s + n2(l.collected_cable), 0);
+  const approved   = logs.filter((l) => l.status === "approved" || l.status === "done").length;
 
   return (
     <SafeAreaView style={styles.screen}>
       <FlatList
-        data={loading ? [] : logs}
-        keyExtractor={item => String(item.id)}
-        renderItem={({ item, index }) => <LogCard log={item} delay={60 + index * 40} />}
+        data={groups}
+        keyExtractor={(item) => String(item.project_id)}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
-        ListHeaderComponent={listHeader}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => { setRefreshing(true); load(); }}
-            tintColor="#0d47c9"
+            tintColor="#0A5C3B"
           />
         }
+        ListHeaderComponent={
+          <>
+            <View style={styles.topCard}>
+              <Text style={styles.title}>Teardown Logs</Text>
+              <Text style={styles.titleSub}>Tap a node to view its logs</Text>
+            </View>
+
+            <View style={styles.summaryRow}>
+              <View style={styles.pill}>
+                <Text style={styles.pillValue}>{totalSpans}</Text>
+                <Text style={styles.pillLabel}>Total</Text>
+              </View>
+              <View style={styles.pill}>
+                <Text style={[styles.pillValue, { color: "#059669" }]}>{approved}</Text>
+                <Text style={styles.pillLabel}>Approved</Text>
+              </View>
+              <View style={styles.pill}>
+                <Text style={[styles.pillValue, { color: "#0d47c9" }]}>
+                  {totalCable >= 1000
+                    ? `${(totalCable / 1000).toFixed(1)}km`
+                    : `${totalCable}m`}
+                </Text>
+                <Text style={styles.pillLabel}>Cable</Text>
+              </View>
+            </View>
+
+            {loading && (
+              <View style={styles.centerBox}>
+                <ActivityIndicator color="#0A5C3B" />
+                <Text style={styles.centerText}>Loading logs…</Text>
+              </View>
+            )}
+
+            {!loading && error && (
+              <View style={styles.centerBox}>
+                <Text style={{ fontSize: 36 }}>⚠️</Text>
+                <Text style={styles.emptyTitle}>Failed to load</Text>
+                <Text style={styles.centerText}>{error}</Text>
+                <TouchableOpacity
+                  onPress={() => { setLoading(true); load(); }}
+                  style={styles.retryBtn}
+                >
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {!loading && !error && logs.length === 0 && (
+              <View style={styles.centerBox}>
+                <Text style={{ fontSize: 40 }}>📋</Text>
+                <Text style={styles.emptyTitle}>No logs yet</Text>
+                <Text style={styles.centerText}>No teardown logs found for your team.</Text>
+              </View>
+            )}
+          </>
+        }
+        renderItem={({ item, index }) => (
+          <ProjectSection group={item} colorIdx={index} delay={80 + index * 60} />
+        )}
+        ListFooterComponent={<View style={{ height: 40 }} />}
       />
     </SafeAreaView>
   );
@@ -252,40 +299,51 @@ const styles = StyleSheet.create({
   screen:      { flex: 1, backgroundColor: "#f3f4f6" },
   listContent: { padding: 16, paddingBottom: 40 },
 
-  topCard:     { backgroundColor: "#e9eeea", borderRadius: 30, padding: 20, marginBottom: 16 },
-  title:       { fontSize: 24, fontWeight: "700", color: "#111111" },
-  filterSection:    { marginBottom: 18 },
-  filterLabel:      { fontSize: 14, fontWeight: "600", color: "#444444", marginBottom: 10 },
-  filterWrapper:    { position: "relative", zIndex: 20 },
-  dateSelector:     { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#f8f8f6", borderRadius: 999, paddingVertical: 12, paddingHorizontal: 16, borderWidth: 1, borderColor: "#d0d0ce" },
-  dateSelectorText: { fontSize: 14, fontWeight: "500", color: "#111111" },
-  arrow:            { fontSize: 14, color: "#111111", marginLeft: 8 },
-  dropdown:         { marginTop: 8, backgroundColor: "#ffffff", borderRadius: 16, borderWidth: 1, borderColor: "#dddddd", overflow: "hidden" },
-  dropdownItem:     { paddingVertical: 12, paddingHorizontal: 14 },
-  dropdownText:     { fontSize: 14, color: "#111111" },
-  selectedDateText: { fontSize: 13, color: "#666666", marginTop: 10 },
-  dateScrollContent:{ paddingRight: 8 },
-  dayItem:          { alignItems: "center", marginRight: 12 },
-  dayNumberBox:     { width: 50, height: 36, justifyContent: "center", alignItems: "center", borderTopLeftRadius: 20, borderTopRightRadius: 20, backgroundColor: "#ffffff" },
-  dayNameBox:       { width: 50, height: 24, justifyContent: "center", alignItems: "center", borderBottomLeftRadius: 20, borderBottomRightRadius: 20, backgroundColor: "#ffffff" },
-  dayNumber:        { fontSize: 18, fontWeight: "700", color: "#111111" },
-  dayName:          { fontSize: 11, color: "#666666" },
-  dayActiveBox:     { backgroundColor: "#0A5C3B" },
-  dayActiveText:    { color: "#f8f8f8" },
+  topCard:  { backgroundColor: "#0A5C3B", borderRadius: 24, padding: 20, marginBottom: 14 },
+  title:    { fontSize: 22, fontWeight: "900", color: "#ffffff" },
+  titleSub: { fontSize: 12, color: "rgba(255,255,255,0.7)", marginTop: 2, fontWeight: "600" },
 
-  totalCard:  { backgroundColor: "#f8f8f8", borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: "#efefef" },
-  totalRow:   { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
-  totalBox:   { width: "48%", backgroundColor: "#ffffff", borderRadius: 16, paddingVertical: 18, paddingHorizontal: 12, alignItems: "center" },
-  totalValue: { fontSize: 18, fontWeight: "700", color: "#111111", marginBottom: 6 },
-  totalLabel: { fontSize: 12, color: "#666666" },
+  summaryRow: { flexDirection: "row", gap: 10, marginBottom: 20 },
+  pill: {
+    flex: 1, backgroundColor: "#ffffff", borderRadius: 18,
+    paddingVertical: 14, alignItems: "center",
+    elevation: 2, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
+  pillValue: { fontSize: 17, fontWeight: "900", color: "#111827" },
+  pillLabel: { fontSize: 10, color: "#9ca3af", fontWeight: "700", marginTop: 2, textTransform: "uppercase" },
 
-  summaryRow:   { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
-  summaryTitle: { fontSize: 18, fontWeight: "700", color: "#111111" },
-  summaryCount: { fontSize: 13, color: "#666666" },
+  centerBox:  { backgroundColor: "#fff", borderRadius: 20, padding: 36, alignItems: "center", marginBottom: 12 },
+  centerText: { fontSize: 13, color: "#9ca3af", marginTop: 8, textAlign: "center" },
+  emptyTitle: { fontSize: 15, fontWeight: "800", color: "#111827", marginTop: 10 },
+  retryBtn:   { marginTop: 12, backgroundColor: "#0A5C3B", borderRadius: 12, paddingHorizontal: 24, paddingVertical: 10 },
+  retryText:  { color: "#fff", fontWeight: "800", fontSize: 13 },
 
-  card:       { backgroundColor: "#fff", borderRadius: 20, marginBottom: 12, overflow: "hidden", elevation: 2, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 6 },
+  projectSection: { marginBottom: 24 },
+  projectHeader: {
+    borderLeftWidth: 4, paddingLeft: 12, marginBottom: 10,
+    flexDirection: "row", alignItems: "center",
+  },
+  projectName: { fontSize: 15, fontWeight: "900", color: "#111827" },
+  projectSub:  { fontSize: 11, color: "#9ca3af", fontWeight: "600", marginTop: 2 },
 
-  emptyCard:  { backgroundColor: "#f8f8f8", borderRadius: 20, padding: 32, alignItems: "center", marginBottom: 16 },
-  emptyTitle: { fontSize: 16, fontWeight: "700", color: "#111111", marginTop: 12, marginBottom: 6 },
-  emptyText:  { fontSize: 13, color: "#666666", textAlign: "center" },
+  nodeCard: {
+    flexDirection: "row", alignItems: "center",
+    backgroundColor: "#ffffff", borderRadius: 18, marginBottom: 10,
+    overflow: "hidden", elevation: 3,
+    shadowColor: "#000", shadowOpacity: 0.07, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+  },
+  nodeAccent: { width: 4, alignSelf: "stretch" },
+  nodeBody:   { flex: 1, padding: 14 },
+  nodeTop:    { flexDirection: "row", alignItems: "flex-start", marginBottom: 10 },
+  nodeLeft:   { flex: 1 },
+  nodeRight:  { alignItems: "flex-end", gap: 2 },
+  nodeId:     { fontSize: 14, fontWeight: "900", color: "#111827" },
+  nodeName:   { fontSize: 11, color: "#6b7280", fontWeight: "600", marginTop: 2 },
+  nodeCity:   { fontSize: 10, color: "#9ca3af", marginTop: 1 },
+  nodePct:    { fontSize: 16, fontWeight: "900" },
+  nodeSpans:  { fontSize: 10, color: "#9ca3af", fontWeight: "700" },
+  nodeCable:  { fontSize: 10, color: "#6b7280", fontWeight: "600" },
+  nodeArrow:  { fontSize: 26, color: "#d1d5db", paddingRight: 14 },
+  progressTrack: { height: 4, backgroundColor: "#f3f4f6", borderRadius: 2, overflow: "hidden" },
+  progressFill:  { height: 4, borderRadius: 2 },
 });

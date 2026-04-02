@@ -7,6 +7,7 @@ import {
   FlatList,
   Image,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,9 +15,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
 
 const cardIcon = require("../../assets/images/card-icon.png");
+const LINEMAN_BG = require("@/assets/images/lineman.png");
+const telcoMainLogo = require("@/assets/images/telco-mainlogo.png");
+const telcovantageWideLogo = require("@/assets/images/telcovantage-logo.png");
 
 type Node = {
   id: number;
@@ -32,16 +35,17 @@ type Node = {
   date_finished?: string | null;
   latitude?: number | string | null;
   longitude?: number | string | null;
+  poles_progress?: { total: number; completed: number } | null;
 };
 
 type SearchRow = { type: "search"; key: string };
 type NodeRow = { type: "node"; key: string; node: Node };
 type ListRow = SearchRow | NodeRow;
 
+type StatusFilter = "all" | "ongoing" | "pending" | "completed" | "canceled";
+
 const PRIMARY = "#0A5C3B";
-const PRIMARY_DARK = "#064E33";
 const PRIMARY_SOFT = "#E7F5EE";
-const MINT = "#2F8F63";
 const BORDER = "#D8EBDD";
 const TEXT_SOFT = "#5E7B6C";
 const BG = "#F4FAF6";
@@ -55,108 +59,96 @@ function formatDate(d?: string | null) {
   });
 }
 
+function getStatusLabel(status?: string) {
+  return status?.trim() || "Unknown";
+}
+
 function getStatusColors(status?: string) {
-  switch ((status || "").toLowerCase()) {
-    case "completed":
-    case "done":
-    case "finished":
-      return { bg: "#DCFCE7", text: "#166534", ring: "#86EFAC" };
-    case "in progress":
-      return { bg: "#DCFCE7", text: PRIMARY_DARK, ring: "#6EE7B7" };
+  const s = (status || "").trim().toLowerCase();
+
+  if (s === "pending") {
+    return {
+      bg: "#FEF3C7",
+      text: "#B45309",
+      border: "#FCD34D",
+    };
+  }
+
+  if (s === "ongoing" || s === "in progress") {
+    return {
+      bg: "#E7F5EE",
+      text: "#0A5C3B",
+      border: "#86C9A3",
+    };
+  }
+
+  if (s === "canceled" || s === "cancelled" || s === "cancel") {
+    return {
+      bg: "#FEE2E2",
+      text: "#B91C1C",
+      border: "#FCA5A5",
+    };
+  }
+
+  if (s === "completed" || s === "done" || s === "finished") {
+    return {
+      bg: "#DCFCE7",
+      text: "#166534",
+      border: "#86EFAC",
+    };
+  }
+
+  return {
+    bg: "#F1F5F9",
+    text: "#475569",
+    border: "#CBD5E1",
+  };
+}
+
+function matchesFilter(node: Node, filter: StatusFilter) {
+  const s = (node.status || "").trim().toLowerCase();
+
+  const isCompleted = s === "completed" || s === "done" || s === "finished";
+  const isPending = s === "pending";
+  const isOngoing = s === "ongoing" || s === "in progress";
+  const isCanceled = s === "canceled" || s === "cancelled" || s === "cancel";
+
+  switch (filter) {
     case "ongoing":
-      return { bg: "#ECFDF5", text: PRIMARY, ring: "#A7F3D0" };
+      return isOngoing;
     case "pending":
-      return { bg: "#FEF3C7", text: "#B45309", ring: "#FCD34D" };
-    case "priority":
-      return { bg: "#FCE7F3", text: "#BE185D", ring: "#F9A8D4" };
+      return isPending;
+    case "completed":
+      return isCompleted;
+    case "canceled":
+      return isCanceled;
+    case "all":
     default:
-      return { bg: "#F1F5F9", text: "#475569", ring: "#CBD5E1" };
+      return !isPending && !isCompleted && !isCanceled;
   }
 }
 
-function buildLeafletHtml(lat: number, lng: number): string {
-  return `<!DOCTYPE html>
-<html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#e8f0eb;}
-.leaflet-control-zoom,.leaflet-control-attribution{display:none!important;}</style>
-</head><body>
-<div id="map"></div>
-<script>
-  var map = L.map('map', {
-    center: [${lat}, ${lng}],
-    zoom: 15,
-    zoomControl: false,
-    dragging: false,
-    scrollWheelZoom: false,
-    doubleClickZoom: false,
-    touchZoom: false,
-    attributionControl: false
-  });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19
-  }).addTo(map);
-  var icon = L.divIcon({
-    html: '<div style="width:18px;height:18px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);"></div>',
-    className: '', iconSize: [18, 18], iconAnchor: [9, 9]
-  });
-  L.marker([${lat}, ${lng}], { icon: icon }).addTo(map);
-</script>
-</body></html>`;
-}
-
-function NodeMapPreview({
-  lat,
-  lng,
-  height,
+function FilterChip({
+  label,
+  active,
+  onPress,
 }: {
-  lat: number | null;
-  lng: number | null;
-  height: number;
+  label: string;
+  active: boolean;
+  onPress: () => void;
 }) {
-  if (lat && lng) {
-    return (
-      <View
-        style={{
-          height,
-          borderRadius: 16,
-          overflow: "hidden",
-          marginBottom: 12,
-        }}
-      >
-        <WebView
-          originWhitelist={["*"]}
-          source={{ html: buildLeafletHtml(lat, lng) }}
-          style={{ flex: 1 }}
-          scrollEnabled={false}
-          javaScriptEnabled
-          domStorageEnabled
-          mixedContentMode="always"
-          pointerEvents="none"
-        />
-      </View>
-    );
-  }
   return (
-    <View
-      style={{
-        height,
-        borderRadius: 16,
-        overflow: "hidden",
-        marginBottom: 12,
-        backgroundColor: "#f4faf6",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={onPress}
+      style={[styles.filterChip, active && styles.filterChipActive]}
     >
-      <Image
-        source={cardIcon}
-        style={{ width: "65%", height: "65%" }}
-        resizeMode="contain"
-      />
-    </View>
+      <Text
+        style={[styles.filterChipText, active && styles.filterChipTextActive]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -173,77 +165,124 @@ function NodeCard({
 }) {
   const title = node.node_name || node.node_id;
   const location = [node.city, node.province].filter(Boolean).join(", ");
+  const total = node.poles_progress?.total ?? 0;
+  const completed = node.poles_progress?.completed ?? 0;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const statusLabel = getStatusLabel(node.status);
   const statusColors = getStatusColors(node.status);
-  const lat = node.latitude ? Number(node.latitude) : null;
-  const lng = node.longitude ? Number(node.longitude) : null;
+
+  const handleOpen = () =>
+    router.push({
+      pathname: "/projects/poles",
+      params: {
+        node_id: String(node.id),
+        node_name: node.node_name || node.node_id,
+        node_code: node.node_id,
+        accent: accentColor,
+        project_id: projectId,
+        project_name: projectName,
+      },
+    });
 
   return (
     <TouchableOpacity
-      activeOpacity={0.92}
+      activeOpacity={0.95}
       style={styles.cardWrap}
-      onPress={() =>
-        router.push({
-          pathname: "/projects/poles",
-          params: {
-            node_id: String(node.id),
-            node_name: node.node_name || node.node_id,
-            node_code: node.node_id,
-            accent: accentColor,
-            project_id: projectId,
-            project_name: projectName,
-          },
-        })
-      }
+      onPress={handleOpen}
     >
-      <View style={styles.siteCard}>
-
-        {/* ── Map / Logo image with border frame ── */}
-        <View style={[styles.mapFrame, { borderColor: accentColor + "33" }]}>
-          <NodeMapPreview lat={lat} lng={lng} height={110} />
-          {/* Node ID overlay on image */}
-          <View style={[styles.mapNodeIdBadge, { backgroundColor: accentColor }]}>
-            <Text style={styles.mapNodeIdText} numberOfLines={1}>{node.node_id}</Text>
+      <View style={styles.horizontalCard}>
+        <View style={styles.leftRail}>
+          <View style={styles.nodeIdTopWrap}>
+            <Text style={styles.nodeIdTopLabel}>NODE ID :</Text>
+            <Text style={styles.nodeIdTopValue} numberOfLines={1}>
+              {node.node_id || "—"}
+            </Text>
           </View>
-        </View>
 
-        {/* ── Status badge centered ── */}
-        <View style={styles.statusRow}>
-          <View style={[styles.nodeBadge, { backgroundColor: statusColors.bg, borderColor: statusColors.ring }]}>
-            <Text style={[styles.nodeBadgeText, { color: statusColors.text }]}>
-              {node.status || "Unknown"}
+          <Image
+            source={telcoMainLogo}
+            style={styles.leftRailLogo}
+            resizeMode="contain"
+          />
+
+          <View
+            style={[
+              styles.statusPill,
+              {
+                backgroundColor: statusColors.bg,
+                borderColor: statusColors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.statusPillText, { color: statusColors.text }]}>
+              {statusLabel}
             </Text>
           </View>
         </View>
 
-        {/* ── Info grid ── */}
-        <View style={styles.infoGrid}>
-          <View style={styles.infoCard}>
-            <Text style={styles.infoCardLabel}>📍 Location</Text>
-            <Text style={styles.infoCardValue} numberOfLines={1}>
-              {location || "—"}
-            </Text>
-          </View>
-          <View style={styles.infoCard}>
-            <Text style={styles.infoCardLabel}>👥 Team</Text>
-            <Text style={styles.infoCardValue} numberOfLines={1}>
-              {node.team || "Unassigned"}
-            </Text>
-          </View>
-        </View>
+        <View style={styles.mainPanel}>
+          <View style={styles.topRow}>
+            <View style={styles.nameBlock}>
+              <Text style={styles.sectionEyebrow}>NODE NAME</Text>
+              <Text style={styles.nodeTitle} numberOfLines={1}>
+                {title || "Untitled Node"}
+              </Text>
+              <Text style={styles.nodeLocation} numberOfLines={1}>
+                {location || "No location available"}
+              </Text>
+            </View>
 
-        {node.due_date ? (
-          <View style={styles.footerInfoRow}>
-            <View style={styles.deadlinePill}>
-              <Text style={styles.deadlinePillText}>Due {formatDate(node.due_date)}</Text>
+            <View style={styles.brandCard}>
+              <Image
+                source={telcovantageWideLogo}
+                style={styles.brandCardLogo}
+                resizeMode="contain"
+              />
             </View>
           </View>
-        ) : null}
 
-        {/* ── Open button centered ── */}
-        <View style={styles.siteCardBottom}>
-          <View style={[styles.viewBtn, { backgroundColor: accentColor }]}>
-            <Text style={styles.viewBtnText}>Open</Text>
-            <Text style={styles.siteCardArrow}>›</Text>
+          <View style={styles.bottomRow}>
+            <View style={styles.infoBlockDate}>
+              <Text style={styles.infoLabel}>Due Date</Text>
+              <Text style={styles.infoValue} numberOfLines={1}>
+                {formatDate(node.due_date) || "Not set"}
+              </Text>
+            </View>
+
+            <View style={styles.verticalDivider} />
+
+            <View style={styles.infoBlockTeam}>
+              <Text style={styles.infoLabel}>Team</Text>
+              <Text style={styles.infoValue} numberOfLines={1}>
+                {node.team || "Unassigned"}
+              </Text>
+            </View>
+
+            <View style={styles.progressBlock}>
+              <View style={styles.progressTopLine}>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[styles.progressFill, { width: `${pct}%` as any }]}
+                  />
+                </View>
+                <Text style={styles.progressPct}>{pct}%</Text>
+              </View>
+
+              <Text style={styles.progressText} numberOfLines={1}>
+                {completed} of {total} poles
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={handleOpen}
+              style={[
+                styles.circleButton,
+                { backgroundColor: accentColor || PRIMARY },
+              ]}
+            >
+              <Text style={styles.circleButtonText}>›</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -252,20 +291,22 @@ function NodeCard({
 }
 
 export default function SiteNodesScreen() {
-  const { project_id, site, project_name, accent, project_logo } = useLocalSearchParams<{
-    project_id: string;
-    site: string;
-    project_name: string;
-    accent: string;
-    accent_overlay: string;
-    project_logo: string;
-  }>();
+  const { project_id, site, project_name, accent, project_logo } =
+    useLocalSearchParams<{
+      project_id: string;
+      site: string;
+      project_name: string;
+      accent: string;
+      accent_overlay: string;
+      project_logo: string;
+    }>();
 
   const accentColor = accent || PRIMARY;
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   useEffect(() => {
     const CACHE_KEY = `nodes_project_${project_id}`;
@@ -313,9 +354,12 @@ export default function SiteNodesScreen() {
 
   const filteredNodes = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return nodes;
 
     return nodes.filter((node) => {
+      if (!matchesFilter(node, statusFilter)) return false;
+
+      if (!q) return true;
+
       const haystack = [
         node.node_id,
         node.node_name,
@@ -331,7 +375,7 @@ export default function SiteNodesScreen() {
 
       return haystack.includes(q);
     });
-  }, [nodes, search]);
+  }, [nodes, search, statusFilter]);
 
   const listData = useMemo<ListRow[]>(
     () => [
@@ -365,21 +409,36 @@ export default function SiteNodesScreen() {
                 <Text style={styles.floatingBackIcon}>‹</Text>
               </Pressable>
 
-              <View style={styles.projectCard}>
-                <View style={styles.headerGlowOne} />
-                <View style={styles.headerGlowTwo} />
+              <View
+                style={[styles.projectCard, { backgroundColor: accentColor }]}
+              >
+                <View style={styles.cardBg} />
+                <View style={styles.cardGradientTop} />
+                <View style={styles.cardGradientBlue} />
+
+                <Image
+                  source={LINEMAN_BG}
+                  style={styles.heroLinemanFull}
+                  resizeMode="contain"
+                />
+
+                <View style={styles.topShineBand} />
+                <View style={styles.bottomGlowLine} />
+                <View style={styles.heroAccentRing} />
 
                 <View style={styles.cardContent}>
-                  <View style={styles.heroBadge}>
-                    <Text style={styles.heroBadgeText}>
-                      Please Select Node ID
-                    </Text>
+                  <View style={styles.heroBadgeCentered}>
+                    <Text style={styles.heroBadgeText}>SELECT NODE ID</Text>
                   </View>
 
-                  <View style={styles.heroIconWrap}>
+                  <View style={styles.heroProjectLogoStandalone}>
                     <Image
-                      source={assetUrl(project_logo) ? { uri: assetUrl(project_logo)! } : cardIcon}
-                      style={{ width: "100%", height: "100%" }}
+                      source={
+                        assetUrl(project_logo)
+                          ? { uri: assetUrl(project_logo)! }
+                          : cardIcon
+                      }
+                      style={styles.heroProjectLogoImage}
                       resizeMode="contain"
                     />
                   </View>
@@ -392,9 +451,11 @@ export default function SiteNodesScreen() {
                     {project_name || "Project"}
                   </Text>
 
+                  <View style={styles.separator} />
+
                   <View style={styles.statsRow}>
                     <View style={styles.statBox}>
-                      <Text style={styles.statLabel}>Project</Text>
+                      <Text style={styles.statLabel}>PROJECT</Text>
                       <Text style={styles.statValue} numberOfLines={1}>
                         {project_name || "—"}
                       </Text>
@@ -403,7 +464,7 @@ export default function SiteNodesScreen() {
                     <View style={styles.statDivider} />
 
                     <View style={styles.statBox}>
-                      <Text style={styles.statLabel}>Site</Text>
+                      <Text style={styles.statLabel}>SITE</Text>
                       <Text style={styles.statValue} numberOfLines={1}>
                         {site || "—"}
                       </Text>
@@ -412,7 +473,7 @@ export default function SiteNodesScreen() {
                     <View style={styles.statDivider} />
 
                     <View style={styles.statBox}>
-                      <Text style={styles.statLabel}>Nodes</Text>
+                      <Text style={styles.statLabel}>NODES</Text>
                       <Text style={styles.statValue}>
                         {loadingNodes ? "…" : filteredNodes.length}
                       </Text>
@@ -442,7 +503,7 @@ export default function SiteNodesScreen() {
                     <TextInput
                       value={search}
                       onChangeText={setSearch}
-                      placeholder="Search Node Id"
+                      placeholder="Search Node ID"
                       placeholderTextColor="#9CA3AF"
                       style={styles.searchInput}
                     />
@@ -455,6 +516,38 @@ export default function SiteNodesScreen() {
                       </Pressable>
                     ) : null}
                   </View>
+
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.filterRow}
+                  >
+                    <FilterChip
+                      label="All"
+                      active={statusFilter === "all"}
+                      onPress={() => setStatusFilter("all")}
+                    />
+                    <FilterChip
+                      label="Ongoing"
+                      active={statusFilter === "ongoing"}
+                      onPress={() => setStatusFilter("ongoing")}
+                    />
+                    <FilterChip
+                      label="Pending"
+                      active={statusFilter === "pending"}
+                      onPress={() => setStatusFilter("pending")}
+                    />
+                    <FilterChip
+                      label="Completed"
+                      active={statusFilter === "completed"}
+                      onPress={() => setStatusFilter("completed")}
+                    />
+                    <FilterChip
+                      label="Canceled"
+                      active={statusFilter === "canceled"}
+                      onPress={() => setStatusFilter("canceled")}
+                    />
+                  </ScrollView>
 
                   <Text style={styles.sectionLabel}>
                     {loadingNodes && nodes.length === 0
@@ -487,7 +580,7 @@ const styles = StyleSheet.create({
   },
 
   listContent: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingTop: 10,
     paddingBottom: 48,
   },
@@ -517,102 +610,150 @@ const styles = StyleSheet.create({
   },
 
   projectCard: {
-    borderRadius: 28,
+    borderRadius: 30,
     overflow: "hidden",
-    marginBottom: 18,
-    minHeight: 250,
-    shadowColor: PRIMARY,
+    marginBottom: 22,
+    minHeight: 360,
+    shadowColor: "#003A28",
     shadowOpacity: 0.18,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
     elevation: 10,
     position: "relative",
+  },
+
+  cardBg: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: PRIMARY,
   },
 
-  headerGlowOne: {
+  cardGradientTop: {
     position: "absolute",
     top: -30,
-    right: -20,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: "rgba(255,255,255,0.09)",
+    left: -30,
+    right: -30,
+    height: 210,
+    opacity: 0.45,
+    transform: [{ skewY: "-8deg" }],
+    backgroundColor: "#17A673",
   },
 
-  headerGlowTwo: {
+  cardGradientBlue: {
     position: "absolute",
-    bottom: -60,
+    right: -42,
+    top: 70,
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    backgroundColor: "rgba(169,220,255,0.22)",
+  },
+
+  heroLinemanFull: {
+    position: "absolute",
+    left: -38,
+    top: -45,
+    width: 300,
+    height: 470,
+    opacity: 0.9,
+  },
+
+  topShineBand: {
+    position: "absolute",
+    top: 0,
+    left: 22,
+    right: 22,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.38)",
+  },
+
+  bottomGlowLine: {
+    position: "absolute",
+    bottom: 0,
+    left: 18,
+    right: 18,
+    height: 5,
+    borderTopLeftRadius: 999,
+    borderTopRightRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+
+  heroAccentRing: {
+    position: "absolute",
+    width: 210,
+    height: 210,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    top: 36,
     left: -40,
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: "rgba(255,255,255,0.06)",
   },
 
   cardContent: {
     position: "relative",
     zIndex: 10,
     alignItems: "center",
-    paddingTop: 24,
-    paddingBottom: 28,
+    paddingTop: 34,
+    paddingBottom: 30,
     paddingHorizontal: 20,
   },
 
-  heroBadge: {
+  heroBadgeCentered: {
     alignSelf: "center",
     backgroundColor: "rgba(255,255,255,0.14)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
+    borderColor: "rgba(255,255,255,0.18)",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 14,
+    marginBottom: 18,
   },
 
   heroBadgeText: {
-    color: "#FFFFFF",
+    color: "rgba(255,255,255,0.96)",
     fontSize: 11,
     fontWeight: "800",
-    letterSpacing: 0.8,
+    letterSpacing: 1,
   },
 
-  heroIconWrap: {
-    width: "90%",
-    height: 80,
-    borderRadius: 14,
+  heroProjectLogoStandalone: {
+    width: "74%",
+    height: 154,
+    borderRadius: 24,
+    marginBottom: 18,
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
-    backgroundColor: "#ffffff",
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4,
   },
 
-  heroIcon: {
-    fontSize: 40,
+  heroProjectLogoImage: {
+    width: "100%",
+    height: "100%",
   },
 
   projectName: {
-    fontSize: 24,
+    fontSize: 25,
     fontWeight: "900",
-    color: "#ffffff",
+    color: "#FFFFFF",
     textAlign: "center",
-    letterSpacing: -0.5,
+    letterSpacing: -0.6,
     marginBottom: 4,
   },
 
   projectCode: {
     fontSize: 12,
     fontWeight: "700",
-    color: "rgba(255,255,255,0.75)",
-    letterSpacing: 1.2,
+    color: "rgba(255,255,255,0.72)",
+    letterSpacing: 1.8,
     textTransform: "uppercase",
     marginBottom: 20,
+  },
+
+  separator: {
+    width: "92%",
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginBottom: 18,
   },
 
   statsRow: {
@@ -620,12 +761,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     width: "100%",
     justifyContent: "space-around",
-    backgroundColor: "rgba(255,255,255,0.10)",
-    borderRadius: 20,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
   },
 
   statBox: {
@@ -635,7 +770,7 @@ const styles = StyleSheet.create({
 
   statDivider: {
     width: 1,
-    height: 34,
+    height: 36,
     backgroundColor: "rgba(255,255,255,0.18)",
   },
 
@@ -651,7 +786,7 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 13,
     fontWeight: "800",
-    color: "#ffffff",
+    color: "#FFFFFF",
   },
 
   stickySearchContainer: {
@@ -669,7 +804,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 14,
-    marginBottom: 12,
+    marginBottom: 10,
     shadowColor: PRIMARY,
     shadowOpacity: 0.04,
     shadowRadius: 10,
@@ -706,6 +841,35 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  filterRow: {
+    paddingBottom: 10,
+    gap: 8,
+  },
+
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  filterChipActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#425466",
+  },
+
+  filterChipTextActive: {
+    color: "#FFFFFF",
+  },
+
   sectionLabel: {
     fontSize: 11,
     fontWeight: "800",
@@ -716,233 +880,235 @@ const styles = StyleSheet.create({
   },
 
   cardWrap: {
-    marginBottom: 14,
+    marginBottom: 10,
   },
 
-  siteCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    padding: 16,
+  horizontalCard: {
+    backgroundColor: "#F8FBF7",
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "stretch",
     borderWidth: 1,
-    borderColor: BORDER,
-    shadowColor: PRIMARY,
+    borderColor: "#E6EEE8",
+    shadowColor: "#003A28",
     shadowOpacity: 0.08,
-    shadowRadius: 16,
+    shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
     overflow: "hidden",
-    position: "relative",
   },
 
-  cardOrbOne: {
-    position: "absolute",
-    top: -22,
-    right: -16,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(10,92,59,0.06)",
+  leftRail: {
+    width: 96,
+    alignItems: "center",
+    paddingRight: 10,
+    paddingTop: 2,
+    borderRightWidth: 1,
+    borderRightColor: "#E2E8E2",
   },
 
-  cardOrbTwo: {
-    position: "absolute",
-    bottom: -32,
-    left: -20,
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: "rgba(10,92,59,0.04)",
+  nodeIdTopWrap: {
+    width: "100%",
+    marginBottom: 2,
+    alignItems: "center",
   },
 
-  siteCardTop: {
+  nodeIdTopLabel: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#7B8A80",
+    letterSpacing: 0.6,
+    marginBottom: -3,
+  },
+
+  nodeIdTopValue: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#1B1F1D",
+  },
+
+  leftRailLogo: {
+    width: 48,
+    height: 48,
+    marginBottom: 2,
+    marginTop: -10,
+  },
+
+  statusPill: {
+    width: "88%",
+    minHeight: 32,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginTop: "auto",
+  },
+
+  statusPillText: {
+    fontSize: 7.5,
+    fontWeight: "800",
+    textAlign: "center",
+    lineHeight: 9,
+    letterSpacing: 0.02,
+  },
+
+  mainPanel: {
+    flex: 1,
+    paddingLeft: 12,
+    justifyContent: "space-between",
+    minWidth: 0,
+  },
+
+  topRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 6,
+    minWidth: 0,
   },
 
-  siteMainInfo: {
+  nameBlock: {
+    width: 110,
+    flexShrink: 0,
+    paddingRight: 8,
+  },
+
+  sectionEyebrow: {
+    fontSize: 8.5,
+    fontWeight: "800",
+    color: "#8B918C",
+    letterSpacing: 1,
+    marginBottom: 5,
+  },
+
+  nodeTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111111",
+    marginBottom: 4,
+    letterSpacing: -0.2,
+  },
+
+  nodeLocation: {
+    fontSize: 10,
+    fontWeight: "500",
+    color: "#262626",
+  },
+
+  brandCard: {
     flex: 1,
-    paddingRight: 10,
-  },
-
-  nodeTopLine: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
-  nodeIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
+    minWidth: 110,
+    maxWidth: 160,
+    height: 58,
+    backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: "rgba(10,92,59,0.08)",
+    paddingHorizontal: 8,
+    overflow: "hidden",
   },
 
-  nodeIcon: {
-    fontSize: 26,
+  brandCardLogo: {
+    width: "92%",
+    height: "48%",
   },
 
-  nodeTextWrap: {
-    flex: 1,
+  bottomRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    minWidth: 0,
+    marginTop: -4,
   },
 
-  siteCardName: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#111827",
+  infoBlockTeam: {
+    width: 64,
+    marginRight: 8,
+    marginTop: 0,
+  },
+
+  infoBlockDate: {
+    width: 50,
+    marginRight: 8,
+    marginTop: 0,
+  },
+
+  infoLabel: {
+    fontSize: 9,
+    color: "#777777",
+    marginBottom: 4,
+    fontWeight: "500",
+  },
+
+  infoValue: {
+    fontSize: 9.5,
+    color: "#111111",
+    fontWeight: "900",
+  },
+
+  verticalDivider: {
+    width: 1,
+    height: 38,
+    backgroundColor: "#E1E5E1",
+    marginRight: 8,
+    marginTop: 2,
+  },
+
+  progressBlock: {
+    width: 66,
+    marginRight: 6,
+    marginTop: 0,
+  },
+
+  progressTopLine: {
+    flexDirection: "row",
+    alignItems: "center",
     marginBottom: 4,
   },
 
-  siteCardSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "600",
-    color: TEXT_SOFT,
-  },
-
-  nodeBadge: {
+  progressTrack: {
+    flex: 1,
+    height: 6,
     borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
+    backgroundColor: "#DCE8E0",
+    overflow: "hidden",
+    marginRight: 4,
   },
 
-  nodeBadgeText: {
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#0A6A49",
+  },
+
+  progressPct: {
     fontSize: 9,
     fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-    textAlign: "center",
+    color: "#0A6A49",
   },
 
-  heroStrip: {
-    borderRadius: 20,
-    minHeight: 92,
-    overflow: "hidden",
-    justifyContent: "flex-end",
-    padding: 14,
-    marginBottom: 14,
-    position: "relative",
+  progressText: {
+    fontSize: 9,
+    fontWeight: "500",
+    color: "#111111",
   },
 
-  heroStripGlow: {
-    position: "absolute",
-    right: -20,
-    top: -20,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(255,255,255,0.10)",
-  },
-
-  heroLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "rgba(255,255,255,0.72)",
-    letterSpacing: 1.1,
-    marginBottom: 4,
-  },
-
-  heroTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: -0.3,
-  },
-
-  infoGrid: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 12,
-  },
-
-  infoCard: {
-    flex: 1,
-    backgroundColor: PRIMARY_SOFT,
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-
-  infoCardLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: TEXT_SOFT,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: 6,
-  },
-
-  infoCardValue: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: PRIMARY_DARK,
-  },
-
-  footerInfoRow: {
-    marginBottom: 14,
-  },
-
-  deadlinePill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "#F3FBF6",
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-
-  deadlinePillText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: PRIMARY,
-  },
-
-  siteCardBottom: {
-    alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#ECF3EE",
-    paddingTop: 13,
-  },
-
-  siteArrowText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: TEXT_SOFT,
-  },
-
-  viewBtn: {
-    flexDirection: "row",
+  circleButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 32,
-    width: "70%",
+    flexShrink: 0,
+    marginTop: 6,
   },
 
-  viewBtnText: {
-    fontSize: 12,
-    fontWeight: "800",
+  circleButtonText: {
     color: "#FFFFFF",
-    letterSpacing: 0.6,
-  },
-
-  siteCardArrow: {
-    fontSize: 20,
-    color: "#FFFFFF",
-    fontWeight: "700",
-    marginTop: -1,
+    fontSize: 16,
+    fontWeight: "500",
+    marginTop: -2,
   },
 
   emptyWrap: {
@@ -954,39 +1120,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: TEXT_SOFT,
     fontWeight: "600",
-  },
-
-  mapFrame: {
-    borderRadius: 18,
-    borderWidth: 2,
-    overflow: "hidden",
-    marginBottom: 12,
-    position: "relative",
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
-  },
-
-  mapNodeIdBadge: {
-    position: "absolute",
-    bottom: 10,
-    left: 10,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-
-  mapNodeIdText: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: 0.4,
-  },
-
-  statusRow: {
-    alignItems: "center",
-    marginBottom: 12,
   },
 });

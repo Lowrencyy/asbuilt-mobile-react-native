@@ -50,7 +50,8 @@ function sanitize(s?: string) {
 }
 
 export default function SelectPairScreen() {
-  const { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent } =
+  const { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent,
+          from_pole_latitude, from_pole_longitude, from_pole_gps_captured_at } =
     useLocalSearchParams<{
       pole_id: string;
       pole_code: string;
@@ -59,6 +60,9 @@ export default function SelectPairScreen() {
       project_id: string;
       project_name: string;
       accent: string;
+      from_pole_latitude: string;
+      from_pole_longitude: string;
+      from_pole_gps_captured_at: string;
     }>();
 
   const accentColor = accent || "#334155";
@@ -124,6 +128,7 @@ export default function SelectPairScreen() {
           return;
         }
       }
+
     })();
   }, [pole_code]);
 
@@ -202,6 +207,10 @@ export default function SelectPairScreen() {
         expected_tsc: String(span.expected_tsc),
         expected_powersupply: String(span.expected_powersupply),
         expected_powersupply_housing: String(span.expected_powersupply_housing),
+        from_pole_id:              pole_id                   ?? "",
+        from_pole_latitude:        from_pole_latitude        ?? "",
+        from_pole_longitude:       from_pole_longitude       ?? "",
+        from_pole_gps_captured_at: from_pole_gps_captured_at ?? "",
       },
     });
   }

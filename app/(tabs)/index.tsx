@@ -1,9 +1,11 @@
 import api, { assetUrl } from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
 import { prefetchAll } from "@/lib/prefetch";
+import { projectStore, type Project } from "@/lib/store";
 import { processSyncQueue, queueCount } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
-import { projectStore, type Project } from "@/lib/store";
+import { Asset } from "expo-asset";
+import * as FileSystem from "expo-file-system";
 import * as Location from "expo-location";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -14,6 +16,7 @@ import {
   FlatList,
   Image,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -27,74 +30,166 @@ import {
 } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 
-const weatherBackgrounds = {
-  sunny: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/sunny.jpg"),
-  ).uri,
-  partly_cloudy: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/partly_cloudy.jpg"),
-  ).uri,
-  cloudy: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/cloudy.jpg"),
-  ).uri,
-  foggy: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/foggy.jpg"),
-  ).uri,
-  rainy: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/rainy.jpg"),
-  ).uri,
-  showers: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/showers.jpg"),
-  ).uri,
-  thunderstorm: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/thunderstorm.jpg"),
-  ).uri,
-  night: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/night.jpg"),
-  ).uri,
-  rainy_night: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/rainy-night.jpg"),
-  ).uri,
-  foggy_night: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/foggy-night.jpg"),
-  ).uri,
-  sunny_sunset: Image.resolveAssetSource(
-    require("../../assets/images/weather-image/sunny-sunset.jpg"),
-  ).uri,
+const pickFirstModule = (...factories: Array<() => number>): number => {
+  for (const factory of factories) {
+    try {
+      const mod = factory();
+      if (mod) return mod;
+    } catch {
+      // try next bundled path
+    }
+  }
+  throw new Error("Weather asset module not found.");
 };
 
-const PRIMARY = "#0A5C3B";
-const PRIMARY_DARK = "#064E33";
+const BG_MODULES: Record<string, number> = {
+  sunny: pickFirstModule(
+    () => require("../../assets/images/weather-image/sunny.jpg"),
+    () => require("../../assets/images/sunny.jpg"),
+  ),
+  partly_cloudy: pickFirstModule(
+    () => require("../../assets/images/weather-image/partly_cloudy.jpg"),
+    () => require("../../assets/images/weather-image/partly_cloudy.jpg"),
+    () => require("../../assets/images/partly_cloudy.jpg"),
+    () => require("../../assets/images/partly_cloudy.jpg"),
+  ),
+  cloudy: pickFirstModule(
+    () => require("../../assets/images/weather-image/cloudy.jpg"),
+    () => require("../../assets/images/cloudy.jpg"),
+  ),
+  foggy: pickFirstModule(
+    () => require("../../assets/images/weather-image/foggy.jpg"),
+    () => require("../../assets/images/foggy.jpg"),
+    () => require("../../assets/images/cloudy.jpg"),
+  ),
+  rainy: pickFirstModule(
+    () => require("../../assets/images/weather-image/rainy.jpg"),
+    () => require("../../assets/images/rainy.jpg"),
+  ),
+  showers: pickFirstModule(
+    () => require("../../assets/images/weather-image/showers.jpg"),
+    () => require("../../assets/images/showers.jpg"),
+    () => require("../../assets/images/rainy.jpg"),
+  ),
+  thunderstorm: pickFirstModule(
+    () => require("../../assets/images/weather-image/thunderstorm.jpg"),
+    () => require("../../assets/images/thunderstorm.jpg"),
+  ),
+  night: pickFirstModule(
+    () => require("../../assets/images/weather-image/night.jpg"),
+    () => require("../../assets/images/cloudy.jpg"),
+  ),
+  rainy_night: pickFirstModule(
+    () => require("../../assets/images/weather-image/rainy-night.jpg"),
+    () => require("../../assets/images/rainy.jpg"),
+  ),
+  foggy_night: pickFirstModule(
+    () => require("../../assets/images/weather-image/foggy-night.jpg"),
+    () => require("../../assets/images/foggy.jpg"),
+    () => require("../../assets/images/cloudy.jpg"),
+  ),
+  sunny_sunset: pickFirstModule(
+    () => require("../../assets/images/weather-image/sunny-sunset.jpg"),
+    () => require("../../assets/images/sunny.jpg"),
+  ),
+};
+
+const ICON_MODULES: Record<string, number> = {
+  rain: pickFirstModule(
+    () => require("../../assets/images/weather-icons/rainy.png"),
+    () => require("../../assets/images/weather-icons/temperature.png"),
+  ),
+  wind: pickFirstModule(
+    () => require("../../assets/images/weather-icons/windy-night.png"),
+    () => require("../../assets/images/weather-icons/cloudy-night.png"),
+  ),
+  humidity: pickFirstModule(
+    () => require("../../assets/images/weather-icons/cloudy.png"),
+    () => require("../../assets/images/weather-icons/cloudy-sunny.png"),
+  ),
+  uv: pickFirstModule(
+    () => require("../../assets/images/weather-icons/sunny.png"),
+    () => require("../../assets/images/weather-icons/cloudy-sunny.png"),
+  ),
+};
+
+type AssetMaps = {
+  bg: Record<string, string>;
+  icons: Record<string, string>;
+};
+
+const PRIMARY = "#00704A";
+const PRIMARY_DARK = "#005C3D";
 const PRIMARY_SOFT = "#DDEEE7";
-const MINT = "#37A67A";
+const MINT = "#18A26B";
 const SAGE = "#7AC7A7";
-const DEEP_TEAL = "#0F766E";
+const DEEP_TEAL = "#0B8F63";
 const GOLD_SOFT = "#E8C56B";
 
-const weatherIcons = {
-  rain: Image.resolveAssetSource(
-    require("../../assets/images/weather-icons/rainy.png"),
-  ).uri,
-  wind: Image.resolveAssetSource(
-    require("../../assets/images/weather-icons/windy-night.png"),
-  ).uri,
-  humidity: Image.resolveAssetSource(
-    require("../../assets/images/weather-icons/cloudy.png"),
-  ).uri,
-  uv: Image.resolveAssetSource(
-    require("../../assets/images/weather-icons/sunny.png"),
-  ).uri,
-};
+async function loadAssetMaps(): Promise<AssetMaps> {
+  const toBase64 = async (mod: number, mime: string): Promise<string> => {
+    try {
+      const asset = Asset.fromModule(mod);
+      await asset.downloadAsync();
+      const uri = asset.localUri ?? asset.uri;
+      if (!uri) return "";
+
+      if (uri.startsWith("file://")) {
+        const b64 = await FileSystem.readAsStringAsync(uri, {
+          encoding: "base64" as any,
+        });
+        return `data:${mime};base64,${b64}`;
+      }
+
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      return "";
+    }
+  };
+
+  try {
+    const [bgEntries, iconEntries] = await Promise.all([
+      Promise.all(
+        Object.entries(BG_MODULES).map(
+          async ([k, v]) => [k, await toBase64(v, "image/jpeg")] as const,
+        ),
+      ),
+      Promise.all(
+        Object.entries(ICON_MODULES).map(
+          async ([k, v]) => [k, await toBase64(v, "image/png")] as const,
+        ),
+      ),
+    ]);
+
+    return {
+      bg: Object.fromEntries(bgEntries),
+      icons: Object.fromEntries(iconEntries),
+    };
+  } catch {
+    return {
+      bg: {},
+      icons: {},
+    };
+  }
+}
 
 type WeatherCache = { data: any; city: string };
 
 function buildHtml(
   lat: number | null,
   lon: number | null,
-  bgMap: typeof weatherBackgrounds,
-  iconMap: typeof weatherIcons,
+  bgMap: Record<string, string>,
+  iconMap: Record<string, string>,
   preloaded?: WeatherCache | null,
   userName?: string,
+  isAndroid?: boolean,
 ) {
   const fallbackHour = new Date(
     new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }),
@@ -151,13 +246,13 @@ function buildHtml(
       --group-width: calc(var(--digit-width) * 2 + var(--pair-gap));
       --colon-width: clamp(8px, 2vw, 14px);
       --clock-gap: clamp(4px, 1vw, 8px);
-      --pink: #37a67a;
-      --violet: #0f766e;
+      --pink: #18a26b;
+      --violet: #00704A;
       --peach: #e8c56b;
-      --primary: #0A5C3B;
-      --primary-dark: #064E33;
+      --primary: #00704A;
+      --primary-dark: #005C3D;
       --primary-soft: #DDEEE7;
-      --text-light: #0A5C3B;
+      --text-light: #00704A;
       --panel-top: #ffffff;
       --panel-bottom: #e9f5ef;
       --panel-border: #c7ddd2;
@@ -167,7 +262,8 @@ function buildHtml(
       margin: 0;
       padding: 0;
       width: 100%;
-      overflow-x: hidden;
+      height: 100%;
+      overflow: hidden;
       background: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
       color: white;
@@ -178,11 +274,16 @@ function buildHtml(
       overflow: hidden;
       padding: 8px;
       padding-top: 20px;
+      padding-bottom: 8px;
       display: flex;
       flex-direction: column;
+      justify-content: flex-start;
     }
 
     .widget {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
       width: 100%;
       max-width: 100%;
       padding: 16px;
@@ -194,7 +295,13 @@ function buildHtml(
       box-shadow:
         0 14px 28px rgba(0,0,0,0.40),
         0 1px 0 rgba(255,255,255,0.04) inset;
+      min-height: 0;
+      height: auto;
     }
+
+    .top-bar { flex-shrink: 0; }
+    .time-card { flex-shrink: 0; }
+    .calendar-card { flex-shrink: 0; }
 
     .top-bar {
       margin-bottom: 8px;
@@ -205,7 +312,7 @@ function buildHtml(
       font-weight: 800;
       line-height: 1;
       letter-spacing: -1px;
-      background: linear-gradient(90deg, #0A5C3B 0%, #37A67A 36%, #0F766E 72%, #E8C56B 100%);
+      background: linear-gradient(90deg, #00704A 0%, #18A26B 40%, #0B8F63 78%, #E8C56B 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -225,9 +332,9 @@ function buildHtml(
       position: relative;
       overflow: hidden;
       background: linear-gradient(135deg, rgba(255,255,255,0.98) 0%, #edf7f2 55%, #e0f1e9 100%);
-      border: 1px solid rgba(10,92,59,0.10);
+      border: 1px solid rgba(0,112,74,0.10);
       box-shadow:
-        0 14px 30px rgba(10,92,59,0.10),
+        0 14px 30px rgba(0,112,74,0.10),
         inset 0 1px 0 rgba(255,255,255,0.7);
     }
 
@@ -239,7 +346,7 @@ function buildHtml(
       right: -40px;
       top: -50px;
       border-radius: 999px;
-      background: radial-gradient(circle, rgba(55,166,122,0.18) 0%, rgba(55,166,122,0) 72%);
+      background: radial-gradient(circle, rgba(24,162,107,0.18) 0%, rgba(24,162,107,0) 72%);
       pointer-events: none;
     }
 
@@ -251,7 +358,7 @@ function buildHtml(
       left: -60px;
       bottom: -90px;
       border-radius: 999px;
-      background: radial-gradient(circle, rgba(15,118,110,0.10) 0%, rgba(15,118,110,0) 72%);
+      background: radial-gradient(circle, rgba(0,112,74,0.10) 0%, rgba(0,112,74,0) 72%);
       pointer-events: none;
     }
 
@@ -282,7 +389,7 @@ function buildHtml(
       text-transform: uppercase;
       color: #ffffff;
       background: linear-gradient(135deg, var(--primary), var(--violet));
-      box-shadow: 0 8px 16px rgba(10,92,59,0.18);
+      box-shadow: 0 8px 16px rgba(0,112,74,0.18);
     }
 
     .clock-area {
@@ -311,7 +418,7 @@ function buildHtml(
       padding: 7px 5px 5px;
       border-radius: 18px;
       background: rgba(255,255,255,0.52);
-      border: 1px solid rgba(10,92,59,0.07);
+      border: 1px solid rgba(0,112,74,0.07);
       backdrop-filter: blur(6px);
       min-width: 0;
     }
@@ -326,8 +433,7 @@ function buildHtml(
     }
 
     .label {
-      box-shadow: 0 4px 10px rgba(10,92,59,0.16);
-
+      box-shadow: 0 4px 10px rgba(0,112,74,0.16);
       font-size: 7px;
       font-weight: 900;
       letter-spacing: 1.2px;
@@ -340,7 +446,7 @@ function buildHtml(
       line-height: 1;
       min-width: 74px;
       text-align: center;
-      box-shadow: 0 6px 14px rgba(10,92,59,0.22);
+      box-shadow: 0 6px 14px rgba(0,112,74,0.22);
     }
 
     .colon {
@@ -360,7 +466,7 @@ function buildHtml(
     }
 
     .nums {
-      box-shadow: 0 8px 18px rgba(10,92,59,0.12);
+      box-shadow: 0 8px 18px rgba(0,112,74,0.12);
       border-top: 1px solid rgba(255,255,255,0.95);
       display: inline-block;
       height: var(--digit-height);
@@ -369,12 +475,12 @@ function buildHtml(
       width: var(--digit-width);
       border-radius: var(--digit-radius);
       overflow: hidden;
-      border: 1px solid rgba(10,92,59,0.08);
+      border: 1px solid rgba(0,112,74,0.08);
       background: linear-gradient(180deg, #ffffff 0%, #eef7f2 100%);
     }
 
     .nums:before {
-      border-bottom: 1px solid rgba(10,92,59,0.12);
+      border-bottom: 1px solid rgba(0,112,74,0.12);
       content: "";
       height: 1px;
       left: 0;
@@ -489,10 +595,10 @@ function buildHtml(
     }
 
     .calendar-card {
-      margin-top: 8px;
-      padding: 12px;
+      margin-top: ${isAndroid ? "4px" : "8px"};
+      padding: ${isAndroid ? "8px" : "12px"};
       display: grid;
-      gap: 8px;
+      gap: ${isAndroid ? "5px" : "8px"};
       border-radius: 24px;
       background: #ffffff;
       border: 1px solid #e5e7eb;
@@ -588,14 +694,20 @@ function buildHtml(
     }
 
     .weather-card {
-      margin-top: 8px;
-      border-radius: 20px;
+      margin-top: ${isAndroid ? "4px" : "8px"};
+      border-radius: 22px;
       overflow: hidden;
       position: relative;
-      flex: 1;
-      min-height: 140px;
-      background: #ffffff;
-      box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+      flex: 0 0 auto;
+      min-height: ${isAndroid ? "182px" : "196px"};
+      height: auto;
+      background:
+        radial-gradient(circle at top right, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 28%),
+        linear-gradient(135deg, #18A26B 0%, #00704A 38%, #005C3D 100%);
+      box-shadow:
+        0 16px 34px rgba(0,112,74,0.22),
+        inset 0 1px 0 rgba(255,255,255,0.22);
+      border: 1px solid rgba(255,255,255,0.16);
     }
 
     .weather-bg {
@@ -610,16 +722,23 @@ function buildHtml(
     .weather-overlay {
       position: absolute;
       inset: 0;
-      background: linear-gradient(180deg, rgba(6,78,51,0.16) 0%, rgba(6,78,51,0.28) 45%, rgba(6,78,51,0.48) 100%);
+      background:
+        linear-gradient(
+          180deg,
+          rgba(255,255,255,0.06) 0%,
+          rgba(0,92,61,0.12) 26%,
+          rgba(0,92,61,0.34) 58%,
+          rgba(0,92,61,0.62) 100%
+        );
     }
 
     .weather-loading {
       position: relative;
       z-index: 2;
       padding: 16px 14px;
-      text-align: center;
+      text-align: left;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
       color: rgba(255,255,255,0.96);
     }
 
@@ -628,15 +747,20 @@ function buildHtml(
       z-index: 2;
       display: none;
       flex-direction: column;
-      justify-content: space-between;
-      min-height: 145px;
-      padding: 10px;
+      height: 100%;
+      min-height: inherit;
+      padding: ${isAndroid ? "13px 13px 12px" : "15px 15px 14px"};
+      gap: 10px;
     }
 
     .weather-head {
+      position: relative;
       display: flex;
-      justify-content: space-between;
       align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding-right: ${isAndroid ? "56px" : "64px"};
+      min-height: ${isAndroid ? "40px" : "48px"};
     }
 
     .weather-location-wrap {
@@ -645,143 +769,222 @@ function buildHtml(
     }
 
     .weather-city {
-      font-size: 18px;
-      font-weight: 800;
+      font-size: ${isAndroid ? "16px" : "18px"};
+      font-weight: 900;
       color: #ffffff;
-      line-height: 1.1;
+      line-height: 1.06;
+      word-break: break-word;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.18);
     }
 
     .weather-condition {
-      font-size: 12px;
-      font-weight: 600;
-      color: rgba(255,255,255,0.78);
-      margin-top: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.88);
+      margin-top: 4px;
+      line-height: 1.2;
     }
 
     .weather-main-icon-wrap {
       position: absolute;
-      right: 40px;
-      top: 28px;
-      width: 60px;
-      height: 70px;
+      right: 0;
+      top: -2px;
+      width: ${isAndroid ? "46px" : "56px"};
+      height: ${isAndroid ? "46px" : "56px"};
       pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .weather-main-icon {
       width: 100%;
       height: 100%;
       object-fit: contain;
-      transform: scale(2.2);
       transform-origin: center;
-      filter: drop-shadow(0 6px 14px rgba(0,0,0,0.25));
+      filter: drop-shadow(0 8px 18px rgba(0,0,0,0.26));
     }
 
     .weather-main {
-      margin-top: 12px;
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
-      gap: 14px;
+      gap: 10px;
     }
 
     .weather-temp-wrap {
       display: flex;
       flex-direction: column;
       gap: 4px;
+      min-width: 0;
+      flex: 1;
     }
 
     .weather-temp-big {
-      font-size: 58px;
+      font-size: clamp(${isAndroid ? "38px" : "42px"}, 10vw, ${isAndroid ? "50px" : "56px"});
       font-weight: 900;
-      line-height: 0.95;
+      line-height: 0.92;
       color: #ffffff;
-      letter-spacing: -2px;
-      text-shadow: none;
+      letter-spacing: -1.6px;
+      text-shadow: 0 8px 18px rgba(0,0,0,0.12);
+      white-space: nowrap;
     }
 
     .weather-advisory {
-      font-size: 12px;
-      font-weight: 700;
-      color: #4b5563;
-      max-width: 220px;
+      font-size: 10px;
+      font-weight: 900;
+      color: #ffffff;
+      max-width: ${isAndroid ? "112px" : "128px"};
       text-align: right;
-      line-height: 1.35;
+      line-height: 1.25;
+      flex-shrink: 0;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+      border: 1px solid rgba(255,255,255,0.22);
+      backdrop-filter: blur(4px);
     }
 
     .weather-stats-min {
-      margin-top: 18px;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
+      gap: 8px;
+      margin-top: auto;
     }
 
     .stat-row {
-      border-radius: 999px;
-      background: transparent;
-      border: 1px solid #edf2f7;
-      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
-      color:#edf2f7;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.14);
+      border: 1px solid rgba(255,255,255,0.22);
+      box-shadow:
+        0 8px 20px rgba(15, 23, 42, 0.08),
+        inset 0 1px 0 rgba(255,255,255,0.12);
+      color: #edf2f7;
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 1px 5px;
-      text-align: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 10px;
+      min-height: ${isAndroid ? "42px" : "46px"};
+      backdrop-filter: blur(6px);
+    }
+
+    .stat-row.wide {
+      grid-column: 1 / -1;
+      min-height: ${isAndroid ? "44px" : "48px"};
     }
 
     .stat-left {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 6px;
       min-width: 0;
+      flex: 1;
     }
 
     .stat-icon {
-      width: 18px;
-      height: 18px;
+      width: 14px;
+      height: 14px;
       object-fit: contain;
       opacity: 0.98;
       flex-shrink: 0;
     }
 
     .stat-label {
-      font-size: 12px;
-      font-weight: 700;
-      color: rgba(255,255,255,0.82);
-      letter-spacing: 0.2px;
+      font-size: 10px;
+      font-weight: 800;
+      color: rgba(255,255,255,0.92);
+      letter-spacing: 0.1px;
+      line-height: 1.15;
     }
 
     .stat-value {
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 900;
       color: #fff;
       flex-shrink: 0;
+      text-align: right;
     }
 
     .stat-right-dual {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 8px;
       flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
     .mini-pair {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
     }
 
     .mini-icon {
-      width: 16px;
-      height: 16px;
+      width: 13px;
+      height: 13px;
       object-fit: contain;
       opacity: 0.96;
     }
 
     .mini-text {
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 900;
       color: #fff;
+    }
+
+    @media (max-width: 380px) {
+      .weather-card {
+        min-height: 176px;
+      }
+
+      #weather-content {
+        padding: 11px 11px 10px;
+        gap: 8px;
+      }
+
+      .weather-head {
+        padding-right: 50px;
+        min-height: 38px;
+      }
+
+      .weather-city {
+        font-size: 14px;
+      }
+
+      .weather-condition {
+        font-size: 10px;
+      }
+
+      .weather-main-icon-wrap {
+        width: 38px;
+        height: 38px;
+      }
+
+      .weather-temp-big {
+        font-size: 34px;
+      }
+
+      .weather-advisory {
+        max-width: 90px;
+        font-size: 9px;
+      }
+
+      .weather-stats-min {
+        gap: 6px;
+      }
+
+      .stat-row {
+        padding: 7px 8px;
+        min-height: 40px;
+      }
+
+      .stat-label,
+      .stat-value,
+      .mini-text {
+        font-size: 10px;
+      }
     }
   </style>
 </head>
@@ -799,34 +1002,34 @@ function buildHtml(
       </div>
 
       <div class="clock-area">
-      <div class="unit">
-        <div class="pair">
-          <div class="nums" id="hour-tens" data-current="0"></div>
-          <div class="nums" id="hour-ones" data-current="0"></div>
+        <div class="unit">
+          <div class="pair">
+            <div class="nums" id="hour-tens" data-current="0"></div>
+            <div class="nums" id="hour-ones" data-current="0"></div>
+          </div>
+          <div class="label">Hours</div>
         </div>
-        <div class="label">Hours</div>
-      </div>
 
-      <div class="colon">:</div>
+        <div class="colon">:</div>
 
-      <div class="unit">
-        <div class="pair">
-          <div class="nums" id="minute-tens" data-current="0"></div>
-          <div class="nums" id="minute-ones" data-current="0"></div>
+        <div class="unit">
+          <div class="pair">
+            <div class="nums" id="minute-tens" data-current="0"></div>
+            <div class="nums" id="minute-ones" data-current="0"></div>
+          </div>
+          <div class="label">Minutes</div>
         </div>
-        <div class="label">Minutes</div>
-      </div>
 
-      <div class="colon">:</div>
+        <div class="colon">:</div>
 
-      <div class="unit">
-        <div class="pair">
-          <div class="nums" id="second-tens" data-current="0"></div>
-          <div class="nums" id="second-ones" data-current="0"></div>
+        <div class="unit">
+          <div class="pair">
+            <div class="nums" id="second-tens" data-current="0"></div>
+            <div class="nums" id="second-ones" data-current="0"></div>
+          </div>
+          <div class="label">Seconds</div>
         </div>
-        <div class="label">Seconds</div>
       </div>
-    </div>
     </div>
 
     <div class="calendar-card">
@@ -862,7 +1065,7 @@ function buildHtml(
               <div class="weather-condition" id="w-condition">—</div>
             </div>
             <div class="weather-main-icon-wrap">
-              <img id="w-main-icon" class="weather-main-icon" src="" alt="weather icon" />
+              <img id="w-main-icon" class="weather-main-icon" src="" alt="weather icon" onerror="this.style.display='none'" />
             </div>
           </div>
 
@@ -877,7 +1080,7 @@ function buildHtml(
         <div class="weather-stats-min">
           <div class="stat-row">
             <div class="stat-left">
-              <img class="stat-icon" src="${iconMap.rain}" alt="rain" />
+              <img class="stat-icon" src="${iconMap.rain}" alt="rain" onerror="this.style.display='none'" />
               <div class="stat-label">Rain chance</div>
             </div>
             <div class="stat-value" id="w-rain">—</div>
@@ -885,24 +1088,24 @@ function buildHtml(
 
           <div class="stat-row">
             <div class="stat-left">
-              <img class="stat-icon" src="${iconMap.wind}" alt="wind" />
+              <img class="stat-icon" src="${iconMap.wind}" alt="wind" onerror="this.style.display='none'" />
               <div class="stat-label">Wind speed</div>
             </div>
             <div class="stat-value" id="w-wind">—</div>
           </div>
 
-          <div class="stat-row">
+          <div class="stat-row wide">
             <div class="stat-left">
-              <img class="stat-icon" src="${iconMap.humidity}" alt="humidity" />
+              <img class="stat-icon" src="${iconMap.humidity}" alt="humidity" onerror="this.style.display='none'" />
               <div class="stat-label">Humidity / UV</div>
             </div>
             <div class="stat-right-dual">
               <div class="mini-pair">
-                <img class="mini-icon" src="${iconMap.humidity}" alt="humidity" />
+                <img class="mini-icon" src="${iconMap.humidity}" alt="humidity" onerror="this.style.display='none'" />
                 <div class="mini-text" id="w-humidity">—</div>
               </div>
               <div class="mini-pair">
-                <img class="mini-icon" src="${iconMap.uv}" alt="uv" />
+                <img class="mini-icon" src="${iconMap.uv}" alt="uv" onerror="this.style.display='none'" />
                 <div class="mini-text" id="w-uv">—</div>
               </div>
             </div>
@@ -1149,10 +1352,10 @@ function buildHtml(
     }
 
     function getAdvisory(code, rain, wind, uv) {
-      if ([95,96,99].includes(code)) return "Thunderstorm risk";
-      if (rain >= 70) return "High rain chance";
-      if (wind >= 40) return "Strong winds";
-      if (uv >= 8) return "High UV today";
+      if ([95,96,99].includes(code)) return "Storm alert";
+      if (rain >= 70) return "Bring rain gear";
+      if (wind >= 40) return "Windy outside";
+      if (uv >= 8) return "High UV index";
       return "Good field conditions";
     }
 
@@ -1181,7 +1384,7 @@ function buildHtml(
       const mainIconEl = document.getElementById("w-main-icon");
 
       const assetKey = getWeatherAssetKey(code, isDay);
-      const bgUrl = WEATHER_BACKGROUNDS[assetKey] || WEATHER_BACKGROUNDS.sunny;
+      const bgUrl = WEATHER_BACKGROUNDS[assetKey] || WEATHER_BACKGROUNDS.sunny || "";
       const iconUrl = getMainIcon(code, isDay);
 
       if (cityEl) cityEl.textContent = city;
@@ -1201,18 +1404,23 @@ function buildHtml(
       }
 
       if (weatherBgEl) {
-        weatherBgEl.style.backgroundImage = 'url("' + bgUrl + '")';
+        weatherBgEl.style.backgroundImage = bgUrl ? 'url("' + bgUrl + '")' : "none";
+        weatherBgEl.style.backgroundColor = isDay ? "#d7e7df" : "#6f8d86";
       }
 
       if (mainIconEl) {
-        mainIconEl.src = iconUrl;
+        if (iconUrl) {
+          mainIconEl.src = iconUrl;
+          mainIconEl.style.display = "block";
+        } else {
+          mainIconEl.removeAttribute("src");
+          mainIconEl.style.display = "none";
+        }
       }
 
       if (loadingEl) loadingEl.style.display = "none";
       if (contentEl) contentEl.style.display = "flex";
     }
-
-    
 
     (function() {
       var lat = ${lat ?? "null"};
@@ -1222,8 +1430,20 @@ function buildHtml(
       var bgEl = document.getElementById("weather-bg");
       var iconEl = document.getElementById("w-main-icon");
 
-      if (bgEl) bgEl.style.backgroundImage = 'url("' + WEATHER_BACKGROUNDS["${defaultVisual.bgKey}"] + '")';
-      if (iconEl) iconEl.src = "${defaultVisual.icon}";
+      if (bgEl) {
+        var defaultBg = WEATHER_BACKGROUNDS["${defaultVisual.bgKey}"] || "";
+        bgEl.style.backgroundImage = defaultBg ? 'url("' + defaultBg + '")' : "none";
+        bgEl.style.backgroundColor = "#d7e7df";
+      }
+      if (iconEl) {
+        if ("${defaultVisual.icon}") {
+          iconEl.src = "${defaultVisual.icon}";
+          iconEl.style.display = "block";
+        } else {
+          iconEl.removeAttribute("src");
+          iconEl.style.display = "none";
+        }
+      }
 
       if (preloaded && preloaded.data && preloaded.city) {
         showWeather(preloaded.data, preloaded.city);
@@ -1253,7 +1473,6 @@ function buildHtml(
           }
         });
     })();
-
   </script>
 </body>
 </html>
@@ -1430,15 +1649,20 @@ function ProjectCard({ item }: { item: Project }) {
 export default function Index() {
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  // 49 = standard tab bar height, insets.bottom = safe area below tab bar
-  const TAB_BAR_H = 49 + insets.bottom;
-  const SHEET_HEIGHT = Math.min(Math.max(screenHeight * 0.72, 560), 720);
-  const SHEET_WIDTH = screenWidth - 24;
-  // 108px visible above the tab bar
-  const COLLAPSED_VISIBLE = 102 + TAB_BAR_H;
+  const TAB_HEIGHT = screenWidth < 360 ? 60 : 74;
+  const TAB_BOTTOM = screenWidth < 360 ? 10 : 16;
+  const TAB_BAR_H =
+    TAB_HEIGHT + TAB_BOTTOM + (Platform.OS === "ios" ? insets.bottom : 0);
+  const isAndroid = Platform.OS === "android";
 
-  const collapsedTop = screenHeight - COLLAPSED_VISIBLE - 24;
-  const expandedTop = Math.max((screenHeight - SHEET_HEIGHT) / 2, 84);
+  const SHEET_WIDTH = screenWidth - 8;
+  const COLLAPSED_VISIBLE = (isAndroid ? 20 : 82) + TAB_BAR_H;
+
+  const expandedTop = isAndroid ? 54 : 72;
+  const SHEET_HEIGHT =
+    screenHeight - expandedTop - Math.max(insets.bottom, isAndroid ? 0 : 6);
+
+  const collapsedTop = screenHeight - COLLAPSED_VISIBLE - (isAndroid ? 16 : 24);
 
   const expandedTranslateY = expandedTop - collapsedTop;
   const collapsedTranslateY = 0;
@@ -1459,6 +1683,13 @@ export default function Index() {
   );
   const [weatherCache, setWeatherCache] = useState<WeatherCache | null>(null);
   const [userName, setUserName] = useState("User");
+  const [assetMaps, setAssetMaps] = useState<AssetMaps | null>(null);
+
+  useEffect(() => {
+    loadAssetMaps()
+      .then(setAssetMaps)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     tokenStore.getUser().then((u: any) => {
@@ -1468,20 +1699,31 @@ export default function Index() {
       if (name) setUserName(name);
     });
   }, []);
+
   const [syncing, setSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState<number | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const syncSpin = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    cacheGet<number>("last_synced").then((ts) => { if (ts) setLastSynced(ts); });
+    cacheGet<number>("last_synced").then((ts) => {
+      if (ts) setLastSynced(ts);
+    });
     queueCount().then(setPendingCount);
   }, []);
 
   useEffect(() => {
-    if (!syncing) { syncSpin.setValue(0); return; }
+    if (!syncing) {
+      syncSpin.setValue(0);
+      return;
+    }
     Animated.loop(
-      Animated.timing(syncSpin, { toValue: 1, duration: 800, easing: Easing.linear, useNativeDriver: true }),
+      Animated.timing(syncSpin, {
+        toValue: 1,
+        duration: 800,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
     ).start();
     return () => syncSpin.stopAnimation();
   }, [syncing]);
@@ -1507,17 +1749,31 @@ export default function Index() {
     setSyncing(false);
   }
 
+  const webViewKey = useMemo(
+    () =>
+      [
+        isAndroid ? "android" : "ios",
+        Object.keys(assetMaps?.bg ?? {}).length,
+        Object.keys(assetMaps?.icons ?? {}).length,
+        coords?.lat?.toFixed(3) ?? "na",
+        coords?.lon?.toFixed(3) ?? "na",
+        weatherCache?.city ?? "none",
+      ].join("-"),
+    [assetMaps, coords?.lat, coords?.lon, weatherCache?.city, isAndroid],
+  );
+
   const webViewHtml = useMemo(
     () =>
       buildHtml(
         coords?.lat ?? null,
         coords?.lon ?? null,
-        weatherBackgrounds,
-        weatherIcons,
+        assetMaps?.bg ?? {},
+        assetMaps?.icons ?? {},
         weatherCache,
         userName,
+        isAndroid,
       ),
-    [coords?.lat, coords?.lon, weatherCache, userName],
+    [coords?.lat, coords?.lon, weatherCache, userName, assetMaps, isAndroid],
   );
 
   useEffect(() => {
@@ -1765,6 +2021,7 @@ export default function Index() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.webviewWrap}>
         <WebView
+          key={webViewKey}
           originWhitelist={["*"]}
           source={{ html: webViewHtml }}
           scalesPageToFit={false}
@@ -1778,7 +2035,6 @@ export default function Index() {
           mixedContentMode="always"
         />
 
-        {/* Manual sync button — top-right of greeting */}
         <View style={styles.syncWrapper}>
           <TouchableOpacity
             onPress={handleSync}
@@ -1787,15 +2043,20 @@ export default function Index() {
             style={styles.syncBtn}
           >
             {syncing ? (
-              <ActivityIndicator size={16} color="#0A5C3B" />
+              <ActivityIndicator size={16} color={PRIMARY} />
             ) : (
               <Animated.Text
                 style={[
                   styles.syncIcon,
                   {
-                    transform: [{
-                      rotate: syncSpin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }),
-                    }],
+                    transform: [
+                      {
+                        rotate: syncSpin.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ["0deg", "360deg"],
+                        }),
+                      },
+                    ],
                   },
                 ]}
               >
@@ -1911,6 +2172,16 @@ export default function Index() {
             nestedScrollEnabled
             contentContainerStyle={styles.listContent}
             style={styles.list}
+            ListEmptyComponent={
+              <View style={styles.emptyWrap}>
+                <Text style={styles.emptyIcon}>📋</Text>
+                <Text style={styles.emptyTitle}>No Project Assigned</Text>
+                <Text style={styles.emptySub}>
+                  You don't have any assigned projects yet.{"\n"}Contact your
+                  supervisor for assignment.
+                </Text>
+              </View>
+            }
           />
         </Animated.View>
       </Animated.View>
@@ -1940,14 +2211,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(10,92,59,0.12)",
+    backgroundColor: "rgba(0,112,74,0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
 
   syncIcon: {
     fontSize: 22,
-    color: "#0A5C3B",
+    color: PRIMARY,
     lineHeight: 24,
   },
 
@@ -1974,7 +2245,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 9,
     fontWeight: "600",
-    color: "#0A5C3B",
+    color: PRIMARY,
     opacity: 0.7,
   },
 
@@ -1992,7 +2263,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 32,
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     shadowColor: "#0F172A",
     shadowOffset: { width: 0, height: 16 },
     shadowOpacity: 0.18,
@@ -2002,6 +2276,7 @@ const styles = StyleSheet.create({
     zIndex: 30,
     borderWidth: 1.2,
     borderColor: "#E3EEE8",
+    marginHorizontal: 0,
   },
 
   dragHeader: {
@@ -2064,7 +2339,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: PRIMARY_SOFT,
     borderWidth: 1,
-    borderColor: "rgba(10,92,59,0.08)",
+    borderColor: "rgba(0,112,74,0.08)",
   },
 
   swipeHintText: {
@@ -2369,5 +2644,33 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#6b7280",
     marginTop: 1,
+  },
+
+  emptyWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+    paddingHorizontal: 32,
+  },
+
+  emptyIcon: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
+
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#111827",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+
+  emptySub: {
+    fontSize: 13,
+    color: "#6B7280",
+    textAlign: "center",
+    lineHeight: 20,
   },
 });

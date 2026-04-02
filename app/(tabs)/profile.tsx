@@ -1,18 +1,28 @@
 import { projectStore } from "@/lib/store";
 import { tokenStore } from "@/lib/token";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  Platform,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const APP_VERSION = "2.0";
+const APP_FONT = Platform.select({
+  ios: "System",
+  android: "sans-serif",
+  default: "System",
+});
+
+type IconName = keyof typeof Ionicons.glyphMap;
 
 export default function ProfileScreen() {
   const [user, setUser] = useState<any>(null);
@@ -29,6 +39,13 @@ export default function ProfileScreen() {
       .join("")
       .toUpperCase()
       .slice(0, 2);
+  }, [user]);
+
+  const roleLabel = useMemo(() => {
+    if (!user?.role) return "No role assigned";
+    return String(user.role)
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (m) => m.toUpperCase());
   }, [user]);
 
   function handleLogout() {
@@ -48,289 +65,422 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <StatusBar barStyle="light-content" />
+
       <ScrollView
-        contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.content}
       >
-        <View style={styles.cover}>
-          <View style={styles.coverGlowOne} />
-          <View style={styles.coverGlowTwo} />
+        <View style={styles.hero}>
+          <View style={[styles.heroGlow, styles.heroGlowTop]} />
+          <View style={[styles.heroGlow, styles.heroGlowBottom]} />
+
+          <View style={styles.heroPill}>
+            <Ionicons
+              name="shield-checkmark-outline"
+              size={14}
+              color="#E7FFF2"
+            />
+            <Text style={styles.heroPillText}>Account Center</Text>
+          </View>
+
+          <Text style={styles.heroTitle}>Profile</Text>
+          <Text style={styles.heroSubtitle}>
+            Your account details and application information.
+          </Text>
         </View>
 
-        <View style={styles.profileHeaderWrap}>
-          <View style={styles.avatarOuter}>
+        <View style={styles.profileCard}>
+          <View style={styles.avatarWrap}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>{initials}</Text>
             </View>
           </View>
 
-          <View style={styles.profileTextBlock}>
+          <View style={styles.profileMeta}>
             <Text style={styles.name} numberOfLines={2}>
-              {user?.name ?? "—"}
-            </Text>
-            <Text style={styles.email} numberOfLines={2}>
-              {user?.email ?? "—"}
+              {user?.name ?? "Unknown User"}
             </Text>
 
-            <View style={styles.rolePill}>
-              <Text style={styles.roleText}>{user?.role ?? "—"}</Text>
+            <Text style={styles.email} numberOfLines={2}>
+              {user?.email ?? "No email available"}
+            </Text>
+
+            <View style={styles.roleBadge}>
+              <Text style={styles.roleBadgeText}>{roleLabel}</Text>
             </View>
           </View>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Personal Information</Text>
+        <Section title="PERSONAL INFORMATION">
+          <InfoRow
+            icon="person-outline"
+            label="Full Name"
+            value={user?.name ?? "—"}
+          />
+          <InfoRow
+            icon="mail-outline"
+            label="Email Address"
+            value={user?.email ?? "—"}
+          />
+          <InfoRow icon="briefcase-outline" label="Role" value={roleLabel} />
+          {user?.subcontractor_id != null ? (
+            <InfoRow
+              icon="id-card-outline"
+              label="Subcontractor ID"
+              value={String(user.subcontractor_id)}
+              isLast
+            />
+          ) : (
+            <InfoRow
+              icon="checkmark-circle-outline"
+              label="Status"
+              value="Active"
+              isLast
+            />
+          )}
+        </Section>
 
-          <View style={styles.fbCard}>
-            <InfoItem label="Full Name" value={user?.name ?? "—"} />
-            <Divider />
-            <InfoItem label="Email Address" value={user?.email ?? "—"} />
-            <Divider />
-            <InfoItem label="Role" value={user?.role ?? "—"} />
-            {user?.subcontractor_id != null && (
-              <>
-                <Divider />
-                <InfoItem
-                  label="Subcontractor ID"
-                  value={String(user.subcontractor_id)}
-                />
-              </>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Application</Text>
-
-          <View style={styles.fbCard}>
-            <InfoItem label="App Name" value="Telcovantage Field App" />
-            <Divider />
-            <InfoItem label="Version" value={`v${APP_VERSION}`} />
-          </View>
-        </View>
+        <Section title="APPLICATION">
+          <InfoRow
+            icon="phone-portrait-outline"
+            label="App Name"
+            value="Telcovantage Field App"
+          />
+          <InfoRow
+            icon="cube-outline"
+            label="Version"
+            value={`v${APP_VERSION}`}
+            isLast
+          />
+        </Section>
 
         <TouchableOpacity
-          style={styles.logoutBtn}
+          style={styles.logoutButton}
+          activeOpacity={0.9}
           onPress={handleLogout}
-          activeOpacity={0.88}
         >
+          <Ionicons name="log-out-outline" size={18} color="#C0342B" />
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
+
+        <Text style={styles.footerText}>
+          Your session and saved account data are securely managed on this
+          device.
+        </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function InfoItem({ label, value }: { label: string; value: string }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <View style={styles.infoItem}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionCard}>{children}</View>
     </View>
   );
 }
 
-function Divider() {
-  return <View style={styles.divider} />;
+function InfoRow({
+  icon,
+  label,
+  value,
+  isLast = false,
+}: {
+  icon: IconName;
+  label: string;
+  value: string;
+  isLast?: boolean;
+}) {
+  return (
+    <View style={[styles.infoRow, isLast && styles.infoRowLast]}>
+      <View style={styles.infoIconBox}>
+        <Ionicons name={icon} size={18} color="#204A3D" />
+      </View>
+
+      <View style={styles.infoTextBox}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={styles.infoValue}>{value}</Text>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#F0F2F5",
+    backgroundColor: "#F5F6F8",
   },
 
-  scroll: {
-    paddingBottom: 120,
+  content: {
+    paddingBottom: 40,
   },
 
-  cover: {
-    height: 180,
-    backgroundColor: "#0A5C3B",
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
+  hero: {
+    marginHorizontal: 16,
+    marginTop: 6,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 76,
+    borderRadius: 30,
+    backgroundColor: "#13211C",
     overflow: "hidden",
   },
 
-  coverGlowOne: {
+  heroGlow: {
     position: "absolute",
-    top: -30,
-    right: -20,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+
+  heroGlowTop: {
     width: 180,
     height: 180,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    top: -50,
+    right: -30,
   },
 
-  coverGlowTwo: {
-    position: "absolute",
-    bottom: -30,
-    left: -20,
+  heroGlowBottom: {
     width: 120,
     height: 120,
+    bottom: -26,
+    left: -18,
+  },
+
+  heroPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   },
 
-  profileHeaderWrap: {
-    marginTop: -38,
+  heroPillText: {
+    fontFamily: APP_FONT,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#E7FFF2",
+    letterSpacing: 0.4,
+  },
+
+  heroTitle: {
+    marginTop: 18,
+    fontFamily: APP_FONT,
+    fontSize: 30,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    letterSpacing: -0.5,
+  },
+
+  heroSubtitle: {
+    marginTop: 8,
+    maxWidth: "88%",
+    fontFamily: APP_FONT,
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "400",
+    color: "rgba(255,255,255,0.72)",
+  },
+
+  profileCard: {
+    marginTop: -44,
     marginHorizontal: 16,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 18,
+    flexDirection: "row",
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 5,
+    padding: 18,
+    borderRadius: 26,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E8EBEF",
+    shadowColor: "#101828",
+    shadowOpacity: 0.06,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3,
   },
 
-  avatarOuter: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
-    backgroundColor: "#E8F3EE",
-    justifyContent: "center",
+  avatarWrap: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
     alignItems: "center",
-    marginTop: -54,
-    marginBottom: 12,
-    borderWidth: 4,
-    borderColor: "#FFFFFF",
+    justifyContent: "center",
+    backgroundColor: "#EEF4F1",
+    borderWidth: 1,
+    borderColor: "#E0E8E4",
   },
 
   avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: "#0A5C3B",
-    justifyContent: "center",
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     alignItems: "center",
-    shadowColor: "#0A5C3B",
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 5,
+    justifyContent: "center",
+    backgroundColor: "#204A3D",
   },
 
   avatarText: {
-    fontSize: 30,
-    fontWeight: "900",
+    fontFamily: APP_FONT,
+    fontSize: 24,
+    fontWeight: "700",
     color: "#FFFFFF",
-    letterSpacing: 1,
+    letterSpacing: 0.3,
   },
 
-  profileTextBlock: {
-    width: "100%",
-    alignItems: "center",
-    paddingHorizontal: 8,
+  profileMeta: {
+    flex: 1,
+    marginLeft: 14,
   },
 
   name: {
+    fontFamily: APP_FONT,
     fontSize: 22,
-    fontWeight: "900",
+    fontWeight: "700",
     color: "#111827",
-    textAlign: "center",
-    lineHeight: 28,
-    maxWidth: "92%",
+    letterSpacing: -0.3,
   },
 
   email: {
-    marginTop: 6,
-    fontSize: 13,
-    color: "#6B7280",
-    textAlign: "center",
-    lineHeight: 18,
-    maxWidth: "92%",
+    marginTop: 4,
+    fontFamily: APP_FONT,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "400",
+    color: "#7A8599",
   },
 
-  rolePill: {
+  roleBadge: {
+    alignSelf: "flex-start",
     marginTop: 12,
-    backgroundColor: "#E7F3FF",
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 999,
+    backgroundColor: "#F1F7F4",
+    borderWidth: 1,
+    borderColor: "#DDE9E3",
   },
 
-  roleText: {
+  roleBadgeText: {
+    fontFamily: APP_FONT,
     fontSize: 12,
-    fontWeight: "800",
-    color: "#1877F2",
-    textTransform: "capitalize",
-    letterSpacing: 0.2,
+    fontWeight: "600",
+    color: "#204A3D",
   },
 
   section: {
-    marginTop: 18,
-    paddingHorizontal: 16,
+    marginTop: 20,
+    marginHorizontal: 16,
   },
 
   sectionTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#1F2937",
     marginBottom: 10,
     paddingHorizontal: 2,
+    fontFamily: APP_FONT,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#98A2B3",
+    letterSpacing: 1.1,
   },
 
-  fbCard: {
+  sectionCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E8EBEF",
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
+    shadowColor: "#101828",
+    shadowOpacity: 0.03,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
 
-  infoItem: {
+  infoRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#EEF1F4",
+  },
+
+  infoRowLast: {
+    borderBottomWidth: 0,
+  },
+
+  infoIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4F7F6",
+    marginRight: 12,
+  },
+
+  infoTextBox: {
+    flex: 1,
   },
 
   infoLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#6B7280",
-    marginBottom: 6,
+    marginBottom: 5,
+    fontFamily: APP_FONT,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#98A2B3",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
   },
 
   infoValue: {
+    fontFamily: APP_FONT,
     fontSize: 15,
-    fontWeight: "700",
-    color: "#111827",
-    lineHeight: 21,
+    lineHeight: 22,
+    fontWeight: "500",
+    color: "#1F2937",
   },
 
-  divider: {
-    height: 1,
-    backgroundColor: "#EEF2F7",
-    marginHorizontal: 16,
-  },
-
-  logoutBtn: {
+  logoutButton: {
     marginHorizontal: 16,
     marginTop: 24,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingVertical: 16,
-    alignItems: "center",
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: "#FFF6F5",
     borderWidth: 1,
-    borderColor: "#F3D0D0",
-    shadowColor: "#EF4444",
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    borderColor: "#F5D5D1",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
 
   logoutText: {
+    fontFamily: APP_FONT,
     fontSize: 15,
-    fontWeight: "900",
-    color: "#DC2626",
-    letterSpacing: 0.2,
+    fontWeight: "700",
+    color: "#C0342B",
+  },
+
+  footerText: {
+    marginTop: 14,
+    marginHorizontal: 24,
+    textAlign: "center",
+    fontFamily: APP_FONT,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "400",
+    color: "#98A2B3",
   },
 });

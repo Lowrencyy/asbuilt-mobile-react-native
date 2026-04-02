@@ -43,17 +43,27 @@ async function deleteFile(path: string): Promise<void> {
 export const tokenStore = {
   set: async (token: string): Promise<void> => {
     _token = token;
+    await writeFile(TOKEN_FILE, token);
   },
 
   get: async (): Promise<string | null> => {
+    if (_token) return _token;
+    const saved = await readFile(TOKEN_FILE);
+    if (saved) _token = saved;
     return _token;
   },
 
   setUser: async (user: any): Promise<void> => {
     _user = user;
+    await writeFile(USER_FILE, JSON.stringify(user));
   },
 
   getUser: async (): Promise<any> => {
+    if (_user) return _user;
+    const saved = await readFile(USER_FILE);
+    if (saved) {
+      try { _user = JSON.parse(saved); } catch { /* ignore */ }
+    }
     return _user;
   },
 

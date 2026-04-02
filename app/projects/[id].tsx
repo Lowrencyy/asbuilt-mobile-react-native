@@ -3,10 +3,12 @@ import { cacheGet, cacheSet } from "@/lib/cache";
 import { projectStore } from "@/lib/store";
 import { tokenStore } from "@/lib/token";
 import { router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   FlatList,
   Image,
   Pressable,
@@ -34,71 +36,200 @@ type Node = {
 
 type SiteGroup = { site: string; nodes: Node[] };
 
+const BRAND = {
+  primary: "#00704A",
+  primaryDark: "#005C3D",
+  primarySoft: "#0C8A5C",
+  mintSoft: "#F2FBF7",
+  lightBlue: "#D9F0FF",
+  skySoft: "#EEF8FF",
+  ink: "#103126",
+  muted: "#6B7280",
+  white: "#FFFFFF",
+  border: "#E2EEF0",
+  bg: "#F4FBF8",
+};
+
+const TELCO_LOGO = require("@/assets/images/telco-mainlogo.png");
+const LINEMAN_BG = require("@/assets/images/lineman.png");
+
 function getProjectColors(status: string) {
   switch (status) {
     case "Priority":
       return {
-        base: "#5B21B6",
-        overlay: "#7C3AED",
-        pillBg: "#FFE4E6",
-        pillText: "#E11D48",
+        base: BRAND.primary,
+        overlay: BRAND.primarySoft,
+        pillBg: "#DCFCE7",
+        pillText: "#166534",
       };
     case "In Progress":
       return {
-        base: "#1D4ED8",
-        overlay: "#2563EB",
-        pillBg: "#E0E7FF",
-        pillText: "#4338CA",
+        base: BRAND.primary,
+        overlay: "#17A673",
+        pillBg: "#DDF7EE",
+        pillText: BRAND.primaryDark,
       };
     case "Ongoing":
       return {
-        base: "#0369A1",
-        overlay: "#0EA5E9",
-        pillBg: "#E0F2FE",
-        pillText: "#0369A1",
+        base: "#0B8F63",
+        overlay: "#53C69A",
+        pillBg: "#DDF7EE",
+        pillText: BRAND.primaryDark,
       };
     case "Pending":
       return {
-        base: "#B45309",
-        overlay: "#F59E0B",
-        pillBg: "#FEF3C7",
-        pillText: "#B45309",
+        base: "#0E7490",
+        overlay: "#38BDF8",
+        pillBg: "#E0F2FE",
+        pillText: "#075985",
       };
     default:
       return {
-        base: "#334155",
-        overlay: "#64748B",
-        pillBg: "#E2E8F0",
-        pillText: "#475569",
+        base: BRAND.primary,
+        overlay: BRAND.primarySoft,
+        pillBg: "#DDF7EE",
+        pillText: BRAND.primaryDark,
       };
   }
+}
+
+function AnimatedSiteCard({
+  children,
+  index,
+}: {
+  children: React.ReactNode;
+  index: number;
+}) {
+  const fade = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(28)).current;
+  const scale = useRef(new Animated.Value(0.985)).current;
+
+  useEffect(() => {
+    const delay = 120 + index * 500;
+
+    Animated.parallel([
+      Animated.timing(fade, {
+        toValue: 1,
+        duration: 460,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 460,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 460,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [fade, index, scale, translateY]);
+
+  return (
+    <Animated.View
+      style={{
+        opacity: fade,
+        transform: [{ translateY }, { scale }],
+      }}
+    >
+      {children}
+    </Animated.View>
+  );
 }
 
 export default function ProjectDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const project = projectStore.get().find((p) => String(p.id) === id);
   const colors = getProjectColors(project?.status ?? "");
-  const logoUri = assetUrl(project?.project_logo);
+  const projectLogoUri = assetUrl(project?.project_logo);
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
-  const [downloading, setDownloading] = useState(false);
-  const [downloaded, setDownloaded] = useState(false);
 
-  async function handleDownloadOffline() {
-    if (downloading || loadingNodes || nodes.length === 0) return;
-    setDownloading(true);
-    await Promise.allSettled(
-      nodes.map((node) =>
-        api.get(`/nodes/${node.id}/poles`).then(({ data }) => {
-          const poles: any[] = Array.isArray(data) ? data : data?.data ?? [];
-          return cacheSet(`poles_node_${node.id}`, poles);
+  const heroFade = useRef(new Animated.Value(0)).current;
+  const heroTranslate = useRef(new Animated.Value(22)).current;
+  const heroScale = useRef(new Animated.Value(0.985)).current;
+  const heroFloat = useRef(new Animated.Value(0)).current;
+  const viewPulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(heroFade, {
+        toValue: 1,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(heroTranslate, {
+        toValue: 0,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(heroScale, {
+        toValue: 1,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(heroFloat, {
+          toValue: 1,
+          duration: 2200,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
         }),
-      ),
-    );
-    setDownloading(false);
-    setDownloaded(true);
-  }
+        Animated.timing(heroFloat, {
+          toValue: 0,
+          duration: 2200,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    ).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(viewPulse, {
+          toValue: 1,
+          duration: 1500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: false,
+        }),
+        Animated.timing(viewPulse, {
+          toValue: 0,
+          duration: 1500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: false,
+        }),
+      ]),
+    ).start();
+  }, [heroFade, heroFloat, heroScale, heroTranslate, viewPulse]);
+
+  const animatedViewBg = viewPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["rgba(0,112,74,0.08)", "rgba(0,112,74,0.16)"],
+  });
+
+  const animatedViewBorder = viewPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["rgba(0,112,74,0.14)", "rgba(0,112,74,0.28)"],
+  });
+
+  const heroFloatTranslate = heroFloat.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -6],
+  });
 
   useEffect(() => {
     const CACHE_KEY = `nodes_project_${id}`;
@@ -169,6 +300,12 @@ export default function ProjectDetailScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
+      <View style={styles.backFloatingWrap}>
+        <Pressable onPress={() => router.back()} style={styles.floatingBackBtn}>
+          <Text style={styles.floatingBackIcon}>‹</Text>
+        </Pressable>
+      </View>
+
       <FlatList
         data={siteGroups}
         keyExtractor={(g) => g.site}
@@ -176,114 +313,112 @@ export default function ProjectDetailScreen() {
         contentContainerStyle={styles.listContent}
         ListHeaderComponent={
           <>
-            <Pressable
-              onPress={() => router.back()}
-              style={styles.floatingBackBtn}
+            <Animated.View
+              style={{
+                opacity: heroFade,
+                transform: [
+                  { translateY: heroTranslate },
+                  { scale: heroScale },
+                  { translateY: heroFloatTranslate },
+                ],
+              }}
             >
-              <Text style={styles.floatingBackIcon}>‹</Text>
-            </Pressable>
+              <View style={styles.projectCard}>
+                <View
+                  style={[styles.cardBg, { backgroundColor: colors.base }]}
+                />
+                <View
+                  style={[
+                    styles.cardGradientTop,
+                    { backgroundColor: colors.overlay },
+                  ]}
+                />
+                <View style={styles.cardGradientBlue} />
+                <Image
+                  source={LINEMAN_BG}
+                  style={styles.heroLinemanFull}
+                  resizeMode="contain"
+                />
 
-            <View style={styles.projectCard}>
-              <View style={[styles.cardBg, { backgroundColor: colors.base }]} />
-              <View
-                style={[
-                  styles.cardOverlay,
-                  { backgroundColor: colors.overlay },
-                ]}
-              />
-              <View style={styles.gridOverlay}>
-                {Array.from({ length: 40 }).map((_, i) => (
-                  <View key={i} style={styles.gridDot} />
-                ))}
-              </View>
-              <View style={styles.curveTopRight} />
-              <View style={styles.curveBottomLeft} />
+                <View style={styles.topShineBand} />
+                <View style={styles.bottomGlowLine} />
+                <View style={styles.heroAccentRing} />
 
-              <View style={styles.cardContent}>
-                <View style={styles.logoWrap}>
-                  {logoUri ? (
-                    <Image
-                      source={{ uri: logoUri }}
-                      style={styles.logoImg}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <View style={styles.logoFallback}>
-                      <Text style={styles.logoEmoji}></Text>
-                    </View>
-                  )}
-                </View>
-
-                <Text style={styles.projectName}>{project?.project_name}</Text>
-                <Text style={styles.projectCode}>{project?.project_code}</Text>
-
-                <View style={styles.separator} />
-
-                <View style={styles.statsRow}>
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>CLIENT</Text>
-                    <Text style={styles.statValue} numberOfLines={1}>
-                      {project?.client ?? "—"}
-                    </Text>
+                <View style={styles.cardContent}>
+                  <View style={styles.heroBadgeCentered}>
+                    <Text style={styles.heroBadgeText}>PROJECT OVERVIEW</Text>
                   </View>
 
-                  <View style={styles.statDivider} />
+                  {projectLogoUri ? (
+                    <Image
+                      source={{ uri: projectLogoUri }}
+                      style={styles.heroProjectLogoStandalone}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.heroProjectLogoFallbackStandalone}>
+                      <Text style={styles.heroProjectLogoFallbackText}>
+                        {(project?.project_name?.[0] ?? "P").toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
 
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>STATUS</Text>
-                    <View
-                      style={[
-                        styles.statusPill,
-                        { backgroundColor: colors.pillBg },
-                      ]}
-                    >
-                      <Text
+                  <Text style={styles.projectName}>
+                    {project?.project_name}
+                  </Text>
+                  <Text style={styles.projectCode}>
+                    {project?.project_code}
+                  </Text>
+
+                  <View style={styles.separator} />
+
+                  <View style={styles.statsRow}>
+                    <View style={styles.statBox}>
+                      <Text style={styles.statLabel}>CLIENT</Text>
+                      <Text style={styles.statValue} numberOfLines={1}>
+                        {project?.client ?? "—"}
+                      </Text>
+                    </View>
+
+                    <View style={styles.statDivider} />
+
+                    <View style={styles.statBox}>
+                      <Text style={styles.statLabel}>STATUS</Text>
+                      <View
                         style={[
-                          styles.statusPillText,
-                          { color: colors.pillText },
+                          styles.statusPill,
+                          { backgroundColor: colors.pillBg },
                         ]}
                       >
-                        {project?.status ?? "—"}
+                        <Text
+                          style={[
+                            styles.statusPillText,
+                            { color: colors.pillText },
+                          ]}
+                        >
+                          {project?.status ?? "—"}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.statDivider} />
+
+                    <View style={styles.statBox}>
+                      <Text style={styles.statLabel}>NODES</Text>
+                      <Text style={styles.statValue}>
+                        {loadingNodes ? "…" : nodes.length}
                       </Text>
                     </View>
                   </View>
-
-                  <View style={styles.statDivider} />
-
-                  <View style={styles.statBox}>
-                    <Text style={styles.statLabel}>NODES</Text>
-                    <Text style={styles.statValue}>
-                      {loadingNodes ? "…" : nodes.length}
-                    </Text>
-                  </View>
                 </View>
-
-                {/* Download for offline button */}
-                <TouchableOpacity
-                  onPress={handleDownloadOffline}
-                  disabled={downloading || loadingNodes || nodes.length === 0}
-                  activeOpacity={0.8}
-                  style={[
-                    styles.downloadBtn,
-                    downloaded && styles.downloadBtnDone,
-                  ]}
-                >
-                  {downloading ? (
-                    <ActivityIndicator size={12} color="#ffffff" />
-                  ) : (
-                    <Text style={styles.downloadBtnText}>
-                      {downloaded ? "✓ Saved for Offline" : "↓ Download for Offline"}
-                    </Text>
-                  )}
-                </TouchableOpacity>
               </View>
-            </View>
+            </Animated.View>
 
             <Text style={styles.sectionLabel}>Sites</Text>
 
             {loadingNodes && nodes.length === 0 && (
               <View style={styles.loadingRow}>
-                <ActivityIndicator color="#0A5C3B" size="small" />
+                <ActivityIndicator color={BRAND.primary} size="small" />
                 <Text style={styles.loadingText}>Loading sites...</Text>
               </View>
             )}
@@ -299,111 +434,85 @@ export default function ProjectDetailScreen() {
           ) : null
         }
         renderItem={({ item: group, index }) => (
-          <TouchableOpacity
-            activeOpacity={0.9}
-            style={styles.siteCard}
-            onPress={() =>
-              router.push({
-                pathname: "/projects/site-nodes",
-                params: {
-                  project_id: id,
-                  site: group.site,
-                  project_name: project?.project_name ?? "",
-                  accent: colors.base,
-                  accent_overlay: colors.overlay,
-                  project_logo: project?.project_logo ?? "",
-                },
-              })
-            }
-          >
-            <View
-              style={[
-                styles.siteCardGlow,
-                { backgroundColor: `${colors.base}10` },
-              ]}
-            />
-
-            <View style={styles.siteCardTop}>
+          <AnimatedSiteCard index={index}>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              style={styles.siteCard}
+              onPress={() =>
+                router.push({
+                  pathname: "/projects/site-nodes",
+                  params: {
+                    project_id: id,
+                    site: group.site,
+                    project_name: project?.project_name ?? "",
+                    accent: colors.base,
+                    accent_overlay: colors.overlay,
+                    project_logo: project?.project_logo ?? "",
+                  },
+                })
+              }
+            >
               <View
                 style={[
-                  styles.siteIconWrap,
-                  {
-                    backgroundColor:
-                      group.site === "Unassigned"
-                        ? "#FFF7ED"
-                        : `${colors.base}18`,
-                    borderColor:
-                      group.site === "Unassigned"
-                        ? "#FED7AA"
-                        : `${colors.base}25`,
-                  },
+                  styles.siteCardGlow,
+                  { backgroundColor: `${colors.base}12` },
                 ]}
-              >
-                <Text style={styles.siteCardIcon}>
-                  {group.site === "Unassigned" ? "📂" : "📍"}
-                </Text>
+              />
+              <View style={styles.siteCardGlowBlue} />
+
+              <View style={styles.siteCardTop}>
+                <View style={styles.siteIconWrap}>
+                  <Image
+                    source={TELCO_LOGO}
+                    style={styles.siteCardLogo}
+                    resizeMode="contain"
+                  />
+                </View>
+
+                <View style={styles.siteMainInfo}>
+                  <Text style={styles.siteCardName} numberOfLines={1}>
+                    {group.site}
+                  </Text>
+                  <Text style={styles.siteCardSubtitle}>
+                    {group.site === "Unassigned"
+                      ? "Nodes waiting for site assignment"
+                      : "Tap to view site nodes and details"}
+                  </Text>
+                </View>
               </View>
 
-              <View style={styles.siteMainInfo}>
-                <Text style={styles.siteCardName} numberOfLines={1}>
-                  {group.site}
-                </Text>
-                <Text style={styles.siteCardSubtitle}>
-                  {group.site === "Unassigned"
-                    ? "Nodes waiting for site assignment"
-                    : "Tap to view site nodes and details"}
-                </Text>
-              </View>
+              <View style={styles.siteCardBottom}>
+                <View style={styles.siteMetaRow}>
+                  <View style={styles.siteMetaPill}>
+                    <Text style={styles.siteMetaText}>
+                      {group.nodes.length} node
+                      {group.nodes.length !== 1 ? "s" : ""}
+                    </Text>
+                  </View>
 
-              <View
-                style={[
-                  styles.nodeBadge,
-                  {
-                    backgroundColor:
-                      group.site === "Unassigned"
-                        ? "#FFF7ED"
-                        : `${colors.base}14`,
-                  },
-                ]}
-              >
-                <Text
+                  <View style={styles.siteMetaPillSoft}>
+                    <Text style={styles.siteMetaSoftText}>
+                      {group.site === "Unassigned"
+                        ? "Needs review"
+                        : "Ready to open"}
+                    </Text>
+                  </View>
+                </View>
+
+                <Animated.View
                   style={[
-                    styles.nodeBadgeText,
+                    styles.viewButton,
                     {
-                      color:
-                        group.site === "Unassigned" ? "#C2410C" : colors.base,
+                      backgroundColor: animatedViewBg,
+                      borderColor: animatedViewBorder,
                     },
                   ]}
                 >
-                  {group.nodes.length}
-                </Text>
+                  <Text style={styles.viewButtonText}>View</Text>
+                </Animated.View>
               </View>
-            </View>
-
-            <View style={styles.siteCardBottom}>
-              <View style={styles.siteMetaRow}>
-                <View style={styles.siteMetaPill}>
-                  <Text style={styles.siteMetaText}>
-                    {group.nodes.length} node
-                    {group.nodes.length !== 1 ? "s" : ""}
-                  </Text>
-                </View>
-
-                <View style={styles.siteMetaPillSoft}>
-                  <Text style={styles.siteMetaSoftText}>
-                    {group.site === "Unassigned"
-                      ? "Needs review"
-                      : `Site ${index + 1}`}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.siteArrowWrap}>
-                <Text style={styles.siteArrowText}>View</Text>
-                <Text style={styles.siteCardArrow}>›</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          </AnimatedSiteCard>
         )}
       />
     </SafeAreaView>
@@ -413,25 +522,31 @@ export default function ProjectDetailScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#F6F8FB",
+    backgroundColor: BRAND.bg,
+  },
+
+  backFloatingWrap: {
+    position: "absolute",
+    top: 49,
+    left: 16,
+    zIndex: 50,
   },
 
   listContent: {
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 84,
     paddingBottom: 48,
   },
 
   floatingBackBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#FFFFFF",
+    width: 48,
+    height: 48,
+    borderRadius: 20,
+    backgroundColor: BRAND.white,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: BRAND.border,
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 10,
@@ -441,20 +556,20 @@ const styles = StyleSheet.create({
 
   floatingBackIcon: {
     fontSize: 28,
-    color: "#111827",
-    fontWeight: "600",
+    color: BRAND.primary,
+    fontWeight: "700",
     marginTop: -2,
   },
 
   projectCard: {
-    borderRadius: 24,
+    borderRadius: 30,
     overflow: "hidden",
     marginBottom: 22,
-    minHeight: 280,
-    shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
+    minHeight: 360,
+    shadowColor: "#003A28",
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
     elevation: 10,
     position: "relative",
   },
@@ -463,110 +578,149 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
 
-  cardOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.45,
-    transform: [{ skewY: "-6deg" }, { translateY: -20 }],
-  },
-
-  gridOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    opacity: 0.08,
-    padding: 4,
-  },
-
-  gridDot: {
-    width: "10%",
-    height: "20%",
-    borderWidth: 0.5,
-    borderColor: "#ffffff",
-  },
-
-  curveTopRight: {
+  cardGradientTop: {
     position: "absolute",
-    top: -40,
+    top: -30,
+    left: -30,
     right: -30,
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    backgroundColor: "rgba(255,255,255,0.10)",
+    height: 210,
+    opacity: 0.45,
+    transform: [{ skewY: "-8deg" }],
   },
 
-  curveBottomLeft: {
+  cardGradientBlue: {
     position: "absolute",
-    bottom: -36,
-    left: -24,
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: "rgba(255,255,255,0.07)",
+    right: -42,
+    top: 70,
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    backgroundColor: "rgba(169,220,255,0.22)",
+  },
+
+  topShineBand: {
+    position: "absolute",
+    top: 0,
+    left: 22,
+    right: 22,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.38)",
+  },
+
+  bottomGlowLine: {
+    position: "absolute",
+    bottom: 0,
+    left: 18,
+    right: 18,
+    height: 5,
+    borderTopLeftRadius: 999,
+    borderTopRightRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+
+  heroAccentRing: {
+    position: "absolute",
+    width: 210,
+    height: 210,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    top: 36,
+    left: -40,
+  },
+
+  heroLinemanFull: {
+    position: "absolute",
+    left: -38,
+    top: -45,
+    width: 300,
+    height: 470,
+    opacity: 5,
   },
 
   cardContent: {
     position: "relative",
     zIndex: 10,
     alignItems: "center",
-    paddingTop: 32,
-    paddingBottom: 28,
+    paddingTop: 34,
+    paddingBottom: 30,
     paddingHorizontal: 20,
   },
 
-  logoWrap: {
-    marginBottom: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+  heroBadgeCentered: {
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    marginBottom: 18,
   },
 
-  logoImg: {
-    width: 96,
-    height: 96,
-    borderRadius: 22,
+  heroBadgeText: {
+    color: "rgba(255,255,255,0.96)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+
+  heroProjectLogoStandalone: {
+    width: "74%",
+    height: 154,
+    borderRadius: 24,
+    marginBottom: 18,
+    backgroundColor: BRAND.white,
+  },
+
+  heroProjectLogoFallbackStandalone: {
+    width: "100%",
+    height: 190,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    marginBottom: 18,
+  },
+
+  heroProjectLogoFallback: {
+    width: 100,
+    height: 100,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.12)",
   },
 
-  logoFallback: {
-    width: 96,
-    height: 96,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.25)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  logoEmoji: {
-    fontSize: 44,
+  heroProjectLogoFallbackText: {
+    fontSize: 42,
+    fontWeight: "900",
+    color: BRAND.white,
   },
 
   projectName: {
-    fontSize: 24,
+    fontSize: 25,
     fontWeight: "900",
-    color: "#ffffff",
+    color: BRAND.white,
     textAlign: "center",
-    letterSpacing: -0.5,
+    letterSpacing: -0.6,
     marginBottom: 4,
   },
 
   projectCode: {
     fontSize: 12,
     fontWeight: "700",
-    color: "rgba(255,255,255,0.65)",
-    letterSpacing: 1.5,
+    color: "rgba(255,255,255,0.72)",
+    letterSpacing: 1.8,
     textTransform: "uppercase",
     marginBottom: 20,
   },
 
   separator: {
-    width: "80%",
+    width: "92%",
     height: 1,
     backgroundColor: "rgba(255,255,255,0.18)",
-    marginBottom: 20,
+    marginBottom: 18,
   },
 
   statsRow: {
@@ -583,14 +737,14 @@ const styles = StyleSheet.create({
 
   statDivider: {
     width: 1,
-    height: 34,
+    height: 36,
     backgroundColor: "rgba(255,255,255,0.18)",
   },
 
   statLabel: {
     fontSize: 9,
     fontWeight: "800",
-    color: "rgba(255,255,255,0.55)",
+    color: "rgba(255,255,255,0.6)",
     letterSpacing: 1.2,
     textTransform: "uppercase",
     marginBottom: 5,
@@ -599,12 +753,12 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 13,
     fontWeight: "800",
-    color: "#ffffff",
+    color: BRAND.white,
   },
 
   statusPill: {
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 999,
   },
 
@@ -616,21 +770,21 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontSize: 11,
     fontWeight: "800",
-    color: "#9CA3AF",
+    color: "#6B8A7D",
     letterSpacing: 1.2,
     textTransform: "uppercase",
     marginBottom: 14,
   },
 
   siteCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: BRAND.white,
     borderRadius: 24,
     padding: 16,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: "#EEF2F7",
+    borderColor: BRAND.border,
     shadowColor: "#0F172A",
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.05,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
@@ -640,11 +794,21 @@ const styles = StyleSheet.create({
 
   siteCardGlow: {
     position: "absolute",
-    top: -30,
-    right: -20,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    top: -26,
+    right: -18,
+    width: 118,
+    height: 118,
+    borderRadius: 59,
+  },
+
+  siteCardGlowBlue: {
+    position: "absolute",
+    bottom: -26,
+    left: -18,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: "rgba(169,220,255,0.18)",
   },
 
   siteCardTop: {
@@ -654,17 +818,21 @@ const styles = StyleSheet.create({
   },
 
   siteIconWrap: {
-    width: 58,
-    height: 58,
+    width: 54,
+    height: 54,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
     borderWidth: 1,
+    borderColor: "rgba(0,112,74,0.10)",
+    backgroundColor: "rgba(0,112,74,0.05)",
   },
 
-  siteCardIcon: {
-    fontSize: 28,
+  siteCardLogo: {
+    width: 32,
+    height: 32,
+    tintColor: BRAND.primary,
   },
 
   siteMainInfo: {
@@ -675,7 +843,7 @@ const styles = StyleSheet.create({
   siteCardName: {
     fontSize: 17,
     fontWeight: "800",
-    color: "#111827",
+    color: BRAND.ink,
     marginBottom: 4,
   },
 
@@ -683,21 +851,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     fontWeight: "500",
-    color: "#6B7280",
-  },
-
-  nodeBadge: {
-    minWidth: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-  },
-
-  nodeBadgeText: {
-    fontSize: 14,
-    fontWeight: "900",
+    color: BRAND.muted,
   },
 
   siteCardBottom: {
@@ -705,7 +859,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
+    borderTopColor: "#EEF5F4",
     paddingTop: 13,
   },
 
@@ -714,53 +868,53 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     flexWrap: "wrap",
+    flex: 1,
+    paddingRight: 8,
   },
 
   siteMetaPill: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: BRAND.mintSoft,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#D9EFE6",
   },
 
   siteMetaText: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#334155",
+    color: BRAND.primaryDark,
   },
 
   siteMetaPillSoft: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: BRAND.skySoft,
   },
 
   siteMetaSoftText: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#64748B",
+    color: "#0C6E90",
   },
 
-  siteArrowWrap: {
-    flexDirection: "row",
+  viewButton: {
+    minWidth: 56,
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
     alignItems: "center",
-    gap: 4,
+    justifyContent: "center",
   },
 
-  siteArrowText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#64748B",
-  },
-
-  siteCardArrow: {
-    fontSize: 22,
-    color: "#94A3B8",
-    fontWeight: "700",
-    marginTop: -1,
+  viewButtonText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: BRAND.primary,
+    letterSpacing: 0.2,
   },
 
   loadingRow: {
@@ -772,7 +926,7 @@ const styles = StyleSheet.create({
 
   loadingText: {
     fontSize: 13,
-    color: "#9CA3AF",
+    color: BRAND.muted,
   },
 
   emptyWrap: {
@@ -782,32 +936,7 @@ const styles = StyleSheet.create({
 
   emptyText: {
     fontSize: 14,
-    color: "#9CA3AF",
+    color: BRAND.muted,
     fontWeight: "600",
-  },
-
-  downloadBtn: {
-    marginTop: 14,
-    alignSelf: "stretch",
-    backgroundColor: "rgba(255,255,255,0.22)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.4)",
-    borderRadius: 20,
-    paddingVertical: 9,
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 6,
-  },
-
-  downloadBtnDone: {
-    backgroundColor: "rgba(255,255,255,0.35)",
-  },
-
-  downloadBtnText: {
-    color: "#ffffff",
-    fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 0.5,
   },
 });

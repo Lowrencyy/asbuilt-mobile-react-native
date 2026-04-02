@@ -1,28 +1,54 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
-import { gpsQueueFlush, gpsQueueGet, gpsQueueHasPole, gpsQueuePush } from "@/lib/gps-queue";
+import {
+  gpsQueueFlush,
+  gpsQueueGet,
+  gpsQueueHasPole,
+  gpsQueuePush,
+} from "@/lib/gps-queue";
 import * as FileSystem from "expo-file-system/legacy";
+import { Image as ExpoImage } from "expo-image";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
+  Animated,
+  Easing,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { WebView } from "react-native-webview";
 
-type PhotoField = { uri: string; name: string; type: string } | null;
+type PhotoField = {
+  uri: string;
+  fileUri: string;
+  name: string;
+  type: string;
+  version: number;
+} | null;
+
+type GpsDraft = {
+  lat: number;
+  lng: number;
+  capturedAt: string;
+};
 
 type Span = {
   id: number;
@@ -37,10 +63,66 @@ type Span = {
   expected_powersupply: number;
   expected_powersupply_housing: number;
   from_pole: { id: number; pole_code: string; pole_name: string | null };
-  to_pole:   { id: number; pole_code: string; pole_name: string | null };
+  to_pole: { id: number; pole_code: string; pole_name: string | null };
 };
 
 const SLOTS = ["DA", "C1", "C2", "C3", "C4", "C5"] as const;
+const REQUIRED_GPS_ACCURACY_METERS = 10;
+
+function buildPoleMapHtml(lat: number, lng: number, accentColor: string) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body,#map{width:100%;height:100%;background:#f0f4f8;}
+.leaflet-div-icon{background:none!important;border:none!important;}
+.pin-pulse{
+  width:20px;height:20px;border-radius:50%;
+  background:${accentColor};
+  box-shadow:0 0 0 0 ${accentColor}66;
+  animation:pulse 1.8s infinite;
+}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 ${accentColor}66;}
+  70%{box-shadow:0 0 0 14px ${accentColor}00;}
+  100%{box-shadow:0 0 0 0 ${accentColor}00;}
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var map=L.map('map',{
+  zoomControl:true,
+  scrollWheelZoom:false,
+  dragging:true,
+  doubleClickZoom:false,
+  touchZoom:true
+}).setView([${lat},${lng}],17);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+  subdomains:'abcd',
+  maxZoom:20
+}).addTo(map);
+
+var icon=L.divIcon({
+  className:'',
+  html:'<div class="pin-pulse"></div>',
+  iconSize:[20,20],
+  iconAnchor:[10,10]
+});
+
+L.marker([${lat},${lng}],{icon:icon}).addTo(map);
+
+setTimeout(function(){map.invalidateSize();},100);
+</script>
+</body>
+</html>`;
+}
 
 function sanitize(s?: string) {
   return (s ?? "")
@@ -77,151 +159,283 @@ function getCompletionState({
   };
 }
 
-function StepBadge({ done, label }: { done: boolean; label: string }) {
+function createPhotoField(
+  fileUri: string,
+  name: string,
+): NonNullable<PhotoField> {
+  const version = Date.now();
+  return {
+    uri: `${fileUri}?v=${version}`,
+    fileUri,
+    name,
+    type: "image/jpeg",
+    version,
+  };
+}
+
+function TrackerMini({ done, label }: { done: boolean; label: string }) {
   return (
-    <View style={[styles.stepBadge, done && styles.stepBadgeDone]}>
-      <Text style={[styles.stepBadgeText, done && styles.stepBadgeTextDone]}>
-        {done ? "✓" : "•"} {label}
+    <View style={styles.trackerMini}>
+      <View style={[styles.trackerMiniDot, done && styles.trackerMiniDotDone]}>
+        <Text
+          style={[
+            styles.trackerMiniDotText,
+            done && styles.trackerMiniDotTextDone,
+          ]}
+        >
+          {done ? "✓" : "•"}
+        </Text>
+      </View>
+      <Text
+        numberOfLines={1}
+        style={[styles.trackerMiniLabel, done && styles.trackerMiniLabelDone]}
+      >
+        {label}
       </Text>
     </View>
   );
 }
 
-function PhotoCard({
-  label,
-  photo,
-  onPress,
-  required,
+function ProgressWaveBar({
+  progress,
   accentColor,
-  subtitle,
 }: {
-  label: string;
-  photo: PhotoField;
-  onPress: () => void;
-  required?: boolean;
+  progress: number;
   accentColor: string;
-  subtitle?: string;
 }) {
+  const waveAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(waveAnim, {
+        toValue: 1,
+        duration: 2200,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [waveAnim]);
+
+  const shimmerTranslate = waveAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-160, 260],
+  });
+
+  const bobTranslate = waveAnim.interpolate({
+    inputRange: [0, 0.25, 0.5, 0.75, 1],
+    outputRange: [0, -1.5, 0, 1.5, 0],
+  });
+
   return (
-    <TouchableOpacity
-      style={[
-        styles.photoCard,
-        photo
-          ? {
-              borderColor: accentColor,
-              backgroundColor: "#FFFFFF",
-            }
-          : {},
-      ]}
-      activeOpacity={0.88}
-      onPress={onPress}
-    >
+    <View style={styles.progressBarTrack}>
       <View
         style={[
-          styles.photoCardGlow,
-          photo ? { backgroundColor: `${accentColor}12` } : undefined,
+          styles.progressBarFill,
+          { width: `${progress}%`, backgroundColor: accentColor },
         ]}
-      />
-
-      <View style={styles.photoHeader}>
-        <View
+      >
+        <Animated.View
+          pointerEvents="none"
           style={[
-            styles.photoHeaderIconWrap,
-            photo
-              ? {
-                  backgroundColor: `${accentColor}18`,
-                  borderColor: `${accentColor}28`,
-                }
-              : undefined,
+            styles.progressWave,
+            {
+              transform: [
+                { translateX: shimmerTranslate },
+                { translateY: bobTranslate },
+                { rotate: "12deg" },
+              ],
+            },
           ]}
-        >
-          <Text style={styles.photoHeaderIcon}>
-            {label === "Before" ? "🧰" : label === "After" ? "✅" : "🏷️"}
-          </Text>
-        </View>
-
-        <View style={styles.photoHeaderTextWrap}>
-          <Text style={styles.photoTitle}>
-            {label}
-            {required ? " *" : ""}
-          </Text>
-          <Text style={styles.photoSubtitle}>
-            {subtitle ?? "Tap to capture image"}
-          </Text>
-        </View>
+        />
       </View>
+    </View>
+  );
+}
 
-      <View style={styles.photoBody}>
+function SectionHeading({
+  title,
+  subtitle,
+  right,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+}) {
+  return (
+    <View style={styles.sectionHeader}>
+      <View style={styles.sectionHeaderTextWrap}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {subtitle ? (
+          <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+        ) : null}
+      </View>
+      {right}
+    </View>
+  );
+}
+
+function PhotoTile({
+  label,
+  photo,
+  accentColor,
+  onCapture,
+  onView,
+  compact = false,
+}: {
+  label: string;
+  subtitle?: string;
+  required?: boolean;
+  photo: PhotoField;
+  accentColor: string;
+  onCapture: () => void;
+  onView: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <View style={[styles.photoTile, compact && styles.photoTileCompact]}>
+      <Text
+        style={[
+          styles.photoTileEyebrow,
+          { textAlign: "center" },
+          photo ? { color: accentColor } : null,
+        ]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+
+      <Pressable
+        onPress={photo ? onView : onCapture}
+        style={[
+          styles.photoPreviewWrap,
+          compact && styles.photoPreviewWrapCompact,
+        ]}
+      >
         {photo ? (
-          <Image
-            source={{ uri: photo.uri }}
-            style={styles.photoPreview}
-            resizeMode="cover"
-          />
+          <>
+            <ExpoImage
+              source={{ uri: photo.uri }}
+              style={[styles.photoThumb, compact && styles.photoThumbCompact]}
+              contentFit="cover"
+              transition={150}
+            />
+            <View style={styles.photoOverlay}>
+              <View style={styles.photoOverlayButton}>
+                <Text style={styles.photoOverlayButtonText}>View</Text>
+              </View>
+            </View>
+          </>
         ) : (
-          <View style={styles.photoPlaceholder}>
-            <Text style={styles.photoPlaceholderIcon}>📷</Text>
-            <Text style={styles.photoPlaceholderText}>Tap to capture</Text>
+          <View
+            style={[styles.photoEmpty, compact && styles.photoEmptyCompact]}
+          >
+            <Text style={styles.photoEmptyIcon}>📷</Text>
+            <Text
+              style={
+                compact ? styles.photoEmptyTitleCompact : styles.photoEmptyTitle
+              }
+            >
+              Tap to capture
+            </Text>
           </View>
         )}
-      </View>
+      </Pressable>
 
-      <View style={styles.photoFooter}>
-        <View
-          style={[
-            styles.photoStatePill,
-            photo
-              ? { backgroundColor: "#DCFCE7" }
-              : { backgroundColor: "#F1F5F9" },
-          ]}
-        >
-          <Text
-            style={[
-              styles.photoStateText,
-              photo ? { color: "#166534" } : { color: "#64748B" },
+      {photo ? (
+        <View style={styles.photoSavedRow}>
+          <View style={[styles.statusChip, styles.statusChipSuccess]}>
+            <Text style={[styles.statusChipText, styles.statusChipTextSuccess]}>
+              Photo saved
+            </Text>
+          </View>
+        </View>
+      ) : !compact ? (
+        <View style={styles.photoSavedRow}>
+          <Pressable
+            onPress={onCapture}
+            style={({ pressed }) => [
+              styles.captureMiniBtn,
+              { backgroundColor: accentColor },
+              pressed && styles.pressedDown,
             ]}
           >
-            {photo ? "Captured" : "Not yet captured"}
-          </Text>
+            <Text style={styles.captureMiniBtnText}>Capture</Text>
+          </Pressable>
         </View>
-
-        <View style={[styles.photoActionBtn, { backgroundColor: accentColor }]}>
-          <Text style={styles.photoActionText}>
-            {photo ? "Retake" : "Capture"}
-          </Text>
-        </View>
-      </View>
-    </TouchableOpacity>
+      ) : null}
+    </View>
   );
 }
 
 export default function PoleDetailScreen() {
-  const { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent } =
-    useLocalSearchParams<{
-      pole_id: string;
-      pole_code: string;
-      pole_name: string;
-      node_id: string;
-      project_id: string;
-      project_name: string;
-      accent: string;
-    }>();
+  const {
+    pole_id,
+    pole_code,
+    pole_name,
+    node_id,
+    project_id,
+    project_name,
+    accent,
+  } = useLocalSearchParams<{
+    pole_id: string;
+    pole_code: string;
+    pole_name: string;
+    node_id: string;
+    project_id: string;
+    project_name: string;
+    accent: string;
+  }>();
 
-  const accentColor = accent || "#334155";
+  const accentColor = accent || "#0B7A5A";
 
   const [lat, setLat] = useState<number | null>(null);
   const [lng, setLng] = useState<number | null>(null);
+  const [gpsCapturedAt, setGpsCapturedAt] = useState("");
   const [poleLoading, setPoleLoading] = useState(true);
   const [gpsCapturing, setGpsCapturing] = useState(false);
   const [gpsQueued, setGpsQueued] = useState(false);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
-  const prewarmedGps = useRef<{ latitude: number; longitude: number; accuracy: number | null } | null>(null);
+  const prewarmedGps = useRef<{
+    latitude: number;
+    longitude: number;
+    accuracy: number | null;
+  } | null>(null);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const [street, setStreet] = useState("");
 
-  // Live GPS watcher — starts on screen open, updates accuracy in real-time
+  const [photoBefore, setPhotoBefore] = useState<PhotoField>(null);
+  const [photoAfter, setPhotoAfter] = useState<PhotoField>(null);
+  const [photoTag, setPhotoTag] = useState<PhotoField>(null);
+
+  const [slot, setSlot] = useState("");
+  const [landmark, setLandmark] = useState("");
+  const [spans, setSpans] = useState<Span[]>([]);
+
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerLabel, setViewerLabel] = useState("");
+  const [viewerPhoto, setViewerPhoto] = useState<PhotoField>(null);
+  const [viewerRetake, setViewerRetake] = useState<(() => void) | null>(null);
+
+  const projFolder = sanitize(project_name);
+  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_code}/`;
+  const gpsDraftKey = `pole_gps_${pole_id}`;
+  const F = {
+    before: `pole_${pole_code}_before.jpg`,
+    after: `pole_${pole_code}_after.jpg`,
+    tag: `pole_${pole_code}_poletag.jpg`,
+  };
+
+  const setGpsDraftState = useCallback((draft: GpsDraft) => {
+    setLat(draft.lat);
+    setLng(draft.lng);
+    setGpsCapturedAt(draft.capturedAt);
+  }, []);
+
   useEffect(() => {
     let mounted = true;
+
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") return;
@@ -229,7 +443,7 @@ export default function PoleDetailScreen() {
       const sub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Highest,
-          distanceInterval: 1,  // ignore moves < 1m (GPS noise)
+          distanceInterval: 1,
           timeInterval: 2000,
         },
         (loc) => {
@@ -253,53 +467,60 @@ export default function PoleDetailScreen() {
     };
   }, []);
 
-  const [photoBefore, setPhotoBefore] = useState<PhotoField>(null);
-  const [photoAfter, setPhotoAfter] = useState<PhotoField>(null);
-  const [photoTag, setPhotoTag] = useState<PhotoField>(null);
-
-  const [slot, setSlot] = useState("");
-  const [landmark, setLandmark] = useState("");
-  const [spans, setSpans] = useState<Span[]>([]);
-
-  // Persist slot/landmark so back navigation restores them
-  useEffect(() => { cacheSet(`draft_slot_${pole_id}`, slot).catch(() => {}); }, [slot]);
-  useEffect(() => { cacheSet(`draft_landmark_${pole_id}`, landmark).catch(() => {}); }, [landmark]);
-
-
-  const projFolder = sanitize(project_name);
-  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_code}/`;
-  const F = {
-    before: `pole_${pole_code}_before.jpg`,
-    after: `pole_${pole_code}_after.jpg`,
-    tag: `pole_${pole_code}_poletag.jpg`,
-  };
+  useEffect(() => {
+    if (slot) cacheSet(`draft_slot_${pole_id}`, slot).catch(() => {});
+  }, [slot, pole_id]);
 
   useEffect(() => {
-    // Flush any queued GPS saves and check if this pole has a pending one
+    cacheSet(`draft_landmark_${pole_id}`, landmark).catch(() => {});
+  }, [landmark, pole_id]);
+
+  useEffect(() => {
     gpsQueueFlush().catch(() => {});
     gpsQueueHasPole(pole_id).then(setGpsQueued);
 
-    // Show existing pole GPS instantly: cache → queue → API (in order)
-    cacheGet<{ lat: number; lng: number }>(`pole_gps_${pole_id}`).then(async (g) => {
-      if (g?.lat && g?.lng) {
-        setLat(g.lat); setLng(g.lng); setPoleLoading(false);
-      } else {
-        // Fallback: GPS captured offline — queue has it but cache may have been cleared
-        const q = await gpsQueueGet(pole_id);
-        if (q?.lat && q?.lng) { setLat(q.lat); setLng(q.lng); }
-      }
-    }).catch(() => {});
+    cacheGet<GpsDraft>(gpsDraftKey)
+      .then(async (cached) => {
+        if (cached?.lat && cached?.lng) {
+          setGpsDraftState(cached);
+          setPoleLoading(false);
+          return;
+        }
 
-    // Restore slot/landmark from local cache first (fast), API fills in if empty
-    cacheGet<string>(`draft_slot_${pole_id}`).then((v) => { if (v) setSlot(v); }).catch(() => {});
-    cacheGet<string>(`draft_landmark_${pole_id}`).then((v) => { if (v) setLandmark(v); }).catch(() => {});
+        const queued = await gpsQueueGet(pole_id);
+        if (queued?.lat && queued?.lng) {
+          setGpsDraftState({
+            lat: queued.lat,
+            lng: queued.lng,
+            capturedAt:
+              queued.capturedAt ||
+              queued.gps_captured_at ||
+              queued.created_at ||
+              "",
+          });
+        }
+      })
+      .catch(() => {});
 
-    // Pre-fetch spans — store in state for direct navigation when only 1 span
+    cacheGet<string>(`draft_slot_${pole_id}`)
+      .then((v) => {
+        if (v) setSlot(v);
+      })
+      .catch(() => {});
+
+    cacheGet<string>(`draft_landmark_${pole_id}`)
+      .then((v) => {
+        if (typeof v === "string") setLandmark(v);
+      })
+      .catch(() => {});
+
     const SPANS_KEY = `spans_pole_${pole_id}`;
     cacheGet<Span[]>(SPANS_KEY).then((cached) => {
       if (cached?.length) setSpans(cached);
     });
-    api.get(`/poles/${pole_id}/spans`)
+
+    api
+      .get(`/poles/${pole_id}/spans`)
       .then(({ data }) => {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(SPANS_KEY, list);
@@ -311,18 +532,26 @@ export default function PoleDetailScreen() {
       .get(`/poles/${pole_id}`)
       .then(({ data }) => {
         const d = data?.data ?? data;
+
         if (d?.slot) setSlot(d.slot);
-        if (d?.remarks) setLandmark(d.remarks);
+        if (typeof d?.remarks === "string") setLandmark(d.remarks);
+
         if (d?.map_latitude && d?.map_longitude) {
-          const lat = Number(d.map_latitude);
-          const lng = Number(d.map_longitude);
-          setLat(lat);
-          setLng(lng);
-          cacheSet(`pole_gps_${pole_id}`, { lat, lng }).catch(() => {});
+          const draft: GpsDraft = {
+            lat: Number(d.map_latitude),
+            lng: Number(d.map_longitude),
+            capturedAt:
+              d.gps_captured_at || d.map_captured_at || d.updated_at || "",
+          };
+          setGpsDraftState(draft);
+          cacheSet(gpsDraftKey, draft).catch(() => {});
         }
+
         setPoleLoading(false);
       })
-      .catch(() => { setPoleLoading(false); });
+      .catch(() => {
+        setPoleLoading(false);
+      });
 
     (async () => {
       const dirInfo = await FileSystem.getInfoAsync(draftDir);
@@ -332,7 +561,7 @@ export default function PoleDetailScreen() {
         const path = draftDir + file;
         const info = await FileSystem.getInfoAsync(path);
         if (!info.exists) return null;
-        return { uri: info.uri, name: file, type: "image/jpeg" };
+        return createPhotoField(info.uri, file);
       };
 
       const [pb, pa, pt] = await Promise.all([
@@ -345,7 +574,15 @@ export default function PoleDetailScreen() {
       if (pa) setPhotoAfter(pa);
       if (pt) setPhotoTag(pt);
     })();
-  }, [pole_id]);
+  }, [
+    pole_id,
+    gpsDraftKey,
+    draftDir,
+    F.after,
+    F.before,
+    F.tag,
+    setGpsDraftState,
+  ]);
 
   useEffect(() => {
     if (!lat || !lng) return;
@@ -370,10 +607,10 @@ export default function PoleDetailScreen() {
   async function compressPhoto(uri: string): Promise<string> {
     try {
       const ctx = ImageManipulator.manipulate(uri);
-      ctx.resize({ width: 800 });
+      ctx.resize({ width: 900 });
       const img = await ctx.renderAsync();
       const result = await img.saveAsync({
-        compress: 0.4,
+        compress: 0.45,
         format: SaveFormat.JPEG,
       });
       return result.uri;
@@ -385,19 +622,27 @@ export default function PoleDetailScreen() {
   async function savePhotoDraft(
     fileName: string,
     uri: string,
-  ): Promise<PhotoField> {
+  ): Promise<NonNullable<PhotoField>> {
     await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
+
     const compressed = await compressPhoto(uri);
     const dest = draftDir + fileName;
-    try {
-      await FileSystem.copyAsync({ from: compressed, to: dest });
-    } catch {
-      return { uri: compressed, name: fileName, type: "image/jpeg" };
+    const existing = await FileSystem.getInfoAsync(dest);
+
+    if (existing.exists) {
+      await FileSystem.deleteAsync(dest, { idempotent: true });
     }
-    return { uri: dest, name: fileName, type: "image/jpeg" };
+
+    await FileSystem.copyAsync({ from: compressed, to: dest });
+
+    return createPhotoField(dest, fileName);
   }
 
-  async function openCamera(setter: (p: PhotoField) => void, fileName: string) {
+  async function openCamera(
+    setter: (p: PhotoField) => void,
+    fileName: string,
+    modalLabel?: string,
+  ) {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Permission required", "Please allow camera access.");
@@ -405,27 +650,48 @@ export default function PoleDetailScreen() {
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.5,
       allowsEditing: false,
     });
 
-    if (!result.canceled && result.assets[0]) {
-      const uri = result.assets[0].uri;
-      setter({ uri, name: fileName, type: "image/jpeg" });
+    if (result.canceled || !result.assets[0]) return;
 
-      savePhotoDraft(fileName, uri)
-        .then((saved) => setter(saved))
-        .catch(() => {});
+    const rawUri = result.assets[0].uri;
+    const preview = createPhotoField(rawUri, fileName);
 
-      MediaLibrary.requestPermissionsAsync()
-        .then(({ status: s }) => {
-          if (s === "granted") {
-            MediaLibrary.saveToLibraryAsync(uri).catch(() => {});
-          }
-        })
-        .catch(() => {});
+    setter(preview);
+
+    if (modalLabel && viewerLabel === modalLabel) {
+      setViewerPhoto(preview);
     }
+
+    try {
+      const saved = await savePhotoDraft(fileName, rawUri);
+      setter(saved);
+
+      if (modalLabel && viewerLabel === modalLabel) {
+        setViewerPhoto(saved);
+      }
+    } catch (e: any) {
+      Alert.alert("Photo Error", e?.message ?? "Failed to save photo.");
+    }
+
+    MediaLibrary.requestPermissionsAsync()
+      .then(({ status: s }) => {
+        if (s === "granted") {
+          MediaLibrary.saveToLibraryAsync(rawUri).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
+
+  function openViewer(label: string, photo: PhotoField, retakeFn: () => void) {
+    if (!photo) return;
+    setViewerLabel(label);
+    setViewerPhoto(photo);
+    setViewerRetake(() => retakeFn);
+    setViewerOpen(true);
   }
 
   async function captureGps() {
@@ -438,27 +704,48 @@ export default function PoleDetailScreen() {
     setGpsCapturing(true);
 
     try {
-      // Use latest coords from the live watcher — instant
       const coords = prewarmedGps.current;
+      const currentAccuracy = Math.round(
+        coords?.accuracy ?? gpsAccuracy ?? 999,
+      );
 
       if (!coords) {
-        Alert.alert("GPS not ready", "Still acquiring signal. Please wait a moment.");
+        Alert.alert(
+          "GPS not ready",
+          "Still acquiring signal. Please wait a moment.",
+        );
         return;
       }
 
-      setLat(coords.latitude);
-      setLng(coords.longitude);
-      cacheSet(`pole_gps_${pole_id}`, { lat: coords.latitude, lng: coords.longitude }).catch(() => {});
+      const capturedAt = new Date().toISOString();
+      const draft: GpsDraft = {
+        lat: coords.latitude,
+        lng: coords.longitude,
+        capturedAt,
+      };
 
-      // 3. Try saving to backend — queue if offline
+      setGpsDraftState(draft);
+      await cacheSet(gpsDraftKey, draft).catch(() => {});
+
       try {
         await api.post(`/poles/${pole_id}/gps`, {
-          map_latitude: coords.latitude,
-          map_longitude: coords.longitude,
+          map_latitude: draft.lat,
+          map_longitude: draft.lng,
+          gps_captured_at: draft.capturedAt,
+          gps_accuracy_meters: currentAccuracy,
         });
         setGpsQueued(false);
       } catch {
-        await gpsQueuePush(pole_id, coords.latitude, coords.longitude);
+        await gpsQueuePush(
+          pole_id,
+          draft.lat,
+          draft.lng,
+          draft.capturedAt as any,
+        ).catch(async () => {
+          await cacheSet(`gps_queue_fallback_${pole_id}`, draft).catch(
+            () => {},
+          );
+        });
         setGpsQueued(true);
       }
     } catch (e: any) {
@@ -469,45 +756,92 @@ export default function PoleDetailScreen() {
   }
 
   const hasGps = !!(lat && lng);
-  // "Select Pair" only needs GPS + before + pole_tag (after is optional)
-  // poleLoading=true means we're still checking backend — don't block yet
-  const canSelectPair = (hasGps || poleLoading) && !!photoBefore && !!photoTag;
+  const gpsReadyStrict =
+    gpsAccuracy !== null && gpsAccuracy <= REQUIRED_GPS_ACCURACY_METERS;
+
+  const canSelectPair =
+    (hasGps || poleLoading) &&
+    !!photoBefore &&
+    !!photoAfter &&
+    !!photoTag &&
+    !!slot;
+
+  const gpsTopLabel = hasGps
+    ? `${lat?.toFixed(6)}, ${lng?.toFixed(6)}`
+    : "Captured GPS";
+
+  const gpsSecondaryLabel = hasGps
+    ? street || "Location saved"
+    : gpsAccuracy === null
+      ? "Acquiring signal…"
+      : gpsAccuracy <= REQUIRED_GPS_ACCURACY_METERS
+        ? `Accuracy: ${gpsAccuracy}m • Ready to capture`
+        : gpsAccuracy <= 20
+          ? `Accuracy: ${gpsAccuracy}m • Tap to capture`
+          : `Accuracy: ${gpsAccuracy}m • Weak signal — tap to capture anyway`;
 
   function goToDestination(span: Span) {
     const isReversed = span.to_pole.pole_code === pole_code;
-    const actualToId   = isReversed ? String(span.from_pole.id)   : String(span.to_pole.id);
-    const actualToCode = isReversed ? span.from_pole.pole_code     : span.to_pole.pole_code;
-    const actualToName = isReversed ? (span.from_pole.pole_name ?? span.from_pole.pole_code) : (span.to_pole.pole_name ?? span.to_pole.pole_code);
+    const actualToId = isReversed
+      ? String(span.from_pole.id)
+      : String(span.to_pole.id);
+    const actualToCode = isReversed
+      ? span.from_pole.pole_code
+      : span.to_pole.pole_code;
+    const actualToName = isReversed
+      ? (span.from_pole.pole_name ?? span.from_pole.pole_code)
+      : (span.to_pole.pole_name ?? span.to_pole.pole_code);
+
     router.push({
       pathname: "/teardown/destination-pole" as any,
       params: {
-        pole_code, pole_name, node_id, project_id, project_name, accent: accentColor,
-        span_id:   String(span.id),
+        pole_code,
+        pole_name,
+        node_id,
+        project_id,
+        project_name,
+        accent: accentColor,
+        span_id: String(span.id),
         span_code: span.pole_span_code ?? "",
-        to_pole_id:   actualToId,
+        to_pole_id: actualToId,
         to_pole_code: actualToCode,
         to_pole_name: actualToName,
-        expected_cable:               String(span.expected_cable),
-        length_meters:                String(span.length_meters),
-        declared_runs:                String(span.runs),
-        expected_node:                String(span.expected_node),
-        expected_amplifier:           String(span.expected_amplifier),
-        expected_extender:            String(span.expected_extender),
-        expected_tsc:                 String(span.expected_tsc),
-        expected_powersupply:         String(span.expected_powersupply),
+        expected_cable: String(span.expected_cable),
+        length_meters: String(span.length_meters),
+        declared_runs: String(span.runs),
+        expected_node: String(span.expected_node),
+        expected_amplifier: String(span.expected_amplifier),
+        expected_extender: String(span.expected_extender),
+        expected_tsc: String(span.expected_tsc),
+        expected_powersupply: String(span.expected_powersupply),
         expected_powersupply_housing: String(span.expected_powersupply_housing),
+        from_pole_latitude: lat ? String(lat) : "",
+        from_pole_longitude: lng ? String(lng) : "",
+        from_pole_gps_captured_at: gpsCapturedAt,
       },
     });
   }
 
   function handleNext() {
     if (!canSelectPair) return;
+
     if (spans.length === 1) {
       goToDestination(spans[0]);
     } else {
       router.push({
         pathname: "/teardown/select-pair" as any,
-        params: { pole_id, pole_code, pole_name, node_id, project_id, project_name, accent: accentColor },
+        params: {
+          pole_id,
+          pole_code,
+          pole_name,
+          node_id,
+          project_id,
+          project_name,
+          accent: accentColor,
+          from_pole_latitude: lat ? String(lat) : "",
+          from_pole_longitude: lng ? String(lng) : "",
+          from_pole_gps_captured_at: gpsCapturedAt,
+        },
       });
     }
   }
@@ -524,7 +858,6 @@ export default function PoleDetailScreen() {
     [hasGps, photoBefore, photoAfter, photoTag, slot],
   );
 
-
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
@@ -536,310 +869,379 @@ export default function PoleDetailScreen() {
         >
           <Pressable
             onPress={() => router.back()}
-            style={styles.floatingBackBtn}
+            style={({ pressed }) => [
+              styles.floatingBackBtn,
+              pressed && styles.pressedDown,
+            ]}
           >
             <Text style={styles.floatingBackIcon}>‹</Text>
           </Pressable>
 
           <View style={styles.heroCard}>
             <View style={[styles.heroBg, { backgroundColor: accentColor }]} />
-            <View
-              style={[styles.heroOverlay, { backgroundColor: accentColor }]}
-            />
-            <View style={styles.heroGridOverlay}>
-              {Array.from({ length: 40 }).map((_, i) => (
-                <View key={i} style={styles.heroGridDot} />
-              ))}
-            </View>
-            <View style={styles.heroCurveTopRight} />
-            <View style={styles.heroCurveBottomLeft} />
-
+            <View style={styles.heroNoise} />
+            <View style={styles.heroGlow} />
             <View style={styles.heroContent}>
-              <View style={styles.heroIconWrap}>
-                <Text style={styles.heroIcon}>🔌</Text>
+              <View style={styles.heroTopLine}>
+                <View style={styles.heroBadge}>
+                  <Text style={styles.heroBadgeText}>Pole Teardown</Text>
+                </View>
               </View>
 
               <Text style={styles.heroTitle} numberOfLines={2}>
                 {pole_name || "Pole"}
               </Text>
-              <Text style={styles.heroSubtitle}>Pole Teardown</Text>
 
-              <View style={styles.heroSeparator} />
-
-              <View style={styles.heroStatsRow}>
-                <View style={styles.heroStatBox}>
-                  <Text style={styles.heroStatLabel}>PROJECT</Text>
-                  <Text style={styles.heroStatValue} numberOfLines={1}>
-                    {project_name || "—"}
-                  </Text>
-                </View>
-
-                <View style={styles.heroStatDivider} />
-
-                <View style={styles.heroStatBox}>
-                  <Text style={styles.heroStatLabel}>POLE ID</Text>
-                  <Text style={styles.heroStatValue} numberOfLines={1}>
-                    {pole_id || "—"}
-                  </Text>
-                </View>
-
-                <View style={styles.heroStatDivider} />
-
-                <View style={styles.heroStatBox}>
-                  <Text style={styles.heroStatLabel}>PROGRESS</Text>
-                  <Text style={styles.heroStatValue}>{progress.percent}%</Text>
-                </View>
-              </View>
+              <Text style={styles.heroMeta} numberOfLines={1}>
+                {project_name || "—"} • ID {pole_id || "—"}
+              </Text>
             </View>
           </View>
 
           <View style={styles.progressCard}>
-            <View style={styles.progressHeader}>
+            <View style={styles.progressTopRow}>
               <Text style={styles.progressTitle}>Completion Tracker</Text>
-              <Text style={styles.progressCount}>
-                {progress.completed}/{progress.total}
+              <Text style={[styles.progressPercent, { color: accentColor }]}>
+                {progress.percent}%
               </Text>
             </View>
 
-            <View style={styles.progressBarTrack}>
-              <View
-                style={[
-                  styles.progressBarFill,
-                  {
-                    width: `${progress.percent}%`,
-                    backgroundColor: accentColor,
-                  },
-                ]}
-              />
+            <View style={styles.trackerRow}>
+              <TrackerMini done={hasGps} label="GPS" />
+              <TrackerMini done={!!photoBefore} label="Before" />
+              <TrackerMini done={!!photoAfter} label="After" />
+              <TrackerMini done={!!photoTag} label="Tag" />
+              <TrackerMini done={!!slot} label="Slot" />
             </View>
 
-            <View style={styles.stepRow}>
-              <StepBadge done={hasGps} label="GPS" />
-              <StepBadge done={!!photoBefore} label="Before" />
-              <StepBadge done={!!photoAfter} label="After" />
-              <StepBadge done={!!photoTag} label="Pole Tag" />
-              <StepBadge done={!!slot} label="Slot" />
-            </View>
+            <ProgressWaveBar
+              progress={progress.percent}
+              accentColor={accentColor}
+            />
           </View>
 
           <View style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>GPS Location</Text>
-              <View
-                style={[
-                  styles.sectionPill,
-                  hasGps ? styles.sectionPillSuccess : styles.sectionPillMuted,
-                ]}
-              >
-                <Text
+            <SectionHeading
+              title="GPS Location"
+              right={
+                <View
                   style={[
-                    styles.sectionPillText,
+                    styles.sectionPill,
                     hasGps
-                      ? styles.sectionPillTextSuccess
-                      : styles.sectionPillTextMuted,
+                      ? styles.sectionPillSuccess
+                      : styles.sectionPillMuted,
                   ]}
                 >
-                  {hasGps ? "Captured" : poleLoading ? "Checking…" : "Required"}
-                </Text>
-              </View>
-            </View>
+                  <Text
+                    style={[
+                      styles.sectionPillText,
+                      hasGps
+                        ? styles.sectionPillTextSuccess
+                        : styles.sectionPillTextMuted,
+                    ]}
+                  >
+                    {hasGps
+                      ? "Captured"
+                      : poleLoading
+                        ? "Checking…"
+                        : "Required"}
+                  </Text>
+                </View>
+              }
+            />
 
-            <TouchableOpacity
-              style={[
+            {hasGps && lat !== null && lng !== null ? (
+              <View style={styles.gpsMapBox}>
+                <WebView
+                  style={StyleSheet.absoluteFillObject}
+                  scrollEnabled={false}
+                  originWhitelist={["*"]}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  mixedContentMode="always"
+                  source={{
+                    html: buildPoleMapHtml(lat, lng, accentColor),
+                    baseUrl: "https://local.telcovantage/",
+                  }}
+                  cacheEnabled={false}
+                />
+              </View>
+            ) : null}
+
+            <Pressable
+              style={({ pressed }) => [
                 styles.gpsCardButton,
                 hasGps
                   ? styles.gpsCardButtonSuccess
-                  : { borderColor: accentColor, backgroundColor: "#FFFFFF" },
+                  : {
+                      borderColor: `${accentColor}35`,
+                      backgroundColor: "#FFFFFF",
+                    },
+                pressed &&
+                  !gpsCapturing &&
+                  gpsReadyStrict &&
+                  styles.pressedDown,
+                !hasGps && !gpsReadyStrict && { opacity: 0.7 },
               ]}
-              activeOpacity={0.85}
               onPress={captureGps}
-              disabled={gpsCapturing}
+              disabled={gpsCapturing || (!hasGps && !gpsReadyStrict)}
             >
               <View
                 style={[
                   styles.gpsIconWrap,
                   hasGps
-                    ? { backgroundColor: "#A7F3D0" }
-                    : { backgroundColor: `${accentColor}18` },
+                    ? { backgroundColor: `${accentColor}16` }
+                    : { backgroundColor: `${accentColor}10` },
                 ]}
               >
                 {gpsCapturing || (poleLoading && !hasGps) ? (
                   <ActivityIndicator color={accentColor} size="small" />
                 ) : (
-                  <Text style={styles.gpsIcon}>📍</Text>
+                  <Text style={[styles.gpsIcon, { color: accentColor }]}>
+                    📍
+                  </Text>
                 )}
               </View>
 
               <View style={styles.gpsTextWrap}>
+                <Text style={styles.gpsEyebrow}>GPS DISPLAY</Text>
+
                 <Text
                   style={[
-                    styles.gpsTitle,
-                    hasGps ? { color: "#065F46" } : { color: "#111827" },
+                    styles.gpsCoordinateText,
+                    hasGps && { color: "#0F172A" },
                   ]}
+                  numberOfLines={1}
                 >
-                  {hasGps ? "GPS Captured Successfully" : poleLoading ? "Loading GPS…" : "Capture Current GPS"}
+                  {gpsTopLabel}
                 </Text>
-                <Text style={styles.gpsSubtitle}>
-                  {hasGps
-                    ? street || `${lat?.toFixed(6)}, ${lng?.toFixed(6)}`
-                    : gpsAccuracy === null
-                      ? "Acquiring signal…"
-                      : gpsAccuracy <= 5
-                        ? `✅ Accuracy: ${gpsAccuracy}m — Ready`
-                        : gpsAccuracy <= 15
-                          ? `📡 Accuracy: ${gpsAccuracy}m — Improving…`
-                          : `📡 Accuracy: ${gpsAccuracy}m — Weak signal`}
+
+                <Text style={styles.gpsLocationText} numberOfLines={2}>
+                  {gpsSecondaryLabel}
                 </Text>
-                {gpsQueued && (
-                  <Text style={styles.gpsPendingLabel}>⏳ Pending upload — will sync when online</Text>
-                )}
+
+                {gpsCapturedAt ? (
+                  <Text style={styles.gpsCapturedAt}>
+                    Captured at {new Date(gpsCapturedAt).toLocaleString()}
+                  </Text>
+                ) : null}
+
+                {gpsQueued ? (
+                  <Text style={styles.gpsPendingLabel}>
+                    Pending upload • will sync when online
+                  </Text>
+                ) : null}
               </View>
 
               <View style={styles.gpsArrowWrap}>
-                <Text style={styles.gpsArrow}>{hasGps ? "✓" : "›"}</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Photo Documentation</Text>
-              <View style={[styles.sectionPill, styles.sectionPillMuted]}>
-                <Text
-                  style={[styles.sectionPillText, styles.sectionPillTextMuted]}
-                >
-                  3 Required
+                <Text style={[styles.gpsArrow, { color: accentColor }]}>
+                  {hasGps ? "✓" : gpsReadyStrict ? "›" : "…"}
                 </Text>
               </View>
-            </View>
-
-            <View style={styles.photoStack}>
-              <PhotoCard
-                label="Before"
-                subtitle="Capture pole condition before teardown"
-                photo={photoBefore}
-                onPress={() => openCamera(setPhotoBefore, F.before)}
-                required
-                accentColor={accentColor}
-              />
-
-              <PhotoCard
-                label="After"
-                subtitle="Capture completed teardown output"
-                photo={photoAfter}
-                onPress={() => openCamera(setPhotoAfter, F.after)}
-                required
-                accentColor={accentColor}
-              />
-
-              <PhotoCard
-                label="Pole Tag"
-                subtitle="Capture visible pole identification tag"
-                photo={photoTag}
-                onPress={() => openCamera(setPhotoTag, F.tag)}
-                required
-                accentColor={accentColor}
-              />
-            </View>
+            </Pressable>
           </View>
 
           <View style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Slot Selection</Text>
-              <View
-                style={[
-                  styles.sectionPill,
-                  slot ? styles.sectionPillSuccess : styles.sectionPillMuted,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.sectionPillText,
-                    slot
-                      ? styles.sectionPillTextSuccess
-                      : styles.sectionPillTextMuted,
-                  ]}
-                >
+            <SectionHeading
+              title="Pole Photos"
+              subtitle="Capture clear reference photos before proceeding"
+            />
+
+            <View style={styles.photoRow}>
+              <View style={styles.photoHalf}>
+                <PhotoTile
+                  label="Before"
+                  subtitle="Capture pole condition before teardown"
+                  required
+                  photo={photoBefore}
+                  accentColor={accentColor}
+                  onCapture={() =>
+                    openCamera(setPhotoBefore, F.before, "Before")
+                  }
+                  onView={() =>
+                    openViewer("Before", photoBefore, () =>
+                      openCamera(setPhotoBefore, F.before, "Before"),
+                    )
+                  }
+                  compact
+                />
+              </View>
+
+              <View style={styles.photoHalf}>
+                <PhotoTile
+                  label="After"
+                  subtitle="Capture pole after cable removal"
+                  required
+                  photo={photoAfter}
+                  accentColor={accentColor}
+                  onCapture={() => openCamera(setPhotoAfter, F.after, "After")}
+                  onView={() =>
+                    openViewer("After", photoAfter, () =>
+                      openCamera(setPhotoAfter, F.after, "After"),
+                    )
+                  }
+                  compact
+                />
+              </View>
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <PhotoTile
+                label="Pole Tag"
+                subtitle="Capture visible pole identification tag"
+                required
+                photo={photoTag}
+                accentColor={accentColor}
+                onCapture={() => openCamera(setPhotoTag, F.tag, "Pole Tag")}
+                onView={() =>
+                  openViewer("Pole Tag", photoTag, () =>
+                    openCamera(setPhotoTag, F.tag, "Pole Tag"),
+                  )
+                }
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <View style={styles.inlineHeader}>
+                <Text style={styles.fieldLabelInline}>Slot</Text>
+                <Text style={styles.fieldMeta}>
                   {slot ? `Selected: ${slot}` : "Required"}
                 </Text>
               </View>
-            </View>
 
-            <View style={styles.slotGrid}>
-              {SLOTS.map((s) => (
-                <TouchableOpacity
-                  key={s}
-                  style={[
-                    styles.slotBtn,
-                    slot === s && {
-                      backgroundColor: accentColor,
-                      borderColor: accentColor,
-                    },
-                  ]}
-                  activeOpacity={0.85}
-                  onPress={() => setSlot(s)}
-                >
-                  <Text
-                    style={[
-                      styles.slotText,
-                      slot === s && { color: "#FFFFFF" },
+              <View style={styles.slotRowStatic}>
+                {SLOTS.map((s) => (
+                  <Pressable
+                    key={s}
+                    style={({ pressed }) => [
+                      styles.slotBtn,
+                      slot === s && {
+                        backgroundColor: accentColor,
+                        borderColor: accentColor,
+                      },
+                      pressed && styles.pressedDown,
                     ]}
+                    onPress={() => setSlot(s)}
                   >
-                    {s}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Landmark / Remarks</Text>
-              <View style={[styles.sectionPill, styles.sectionPillMuted]}>
-                <Text
-                  style={[styles.sectionPillText, styles.sectionPillTextMuted]}
-                >
-                  Optional
-                </Text>
+                    <Text
+                      style={[
+                        styles.slotText,
+                        slot === s && { color: "#FFFFFF" },
+                      ]}
+                    >
+                      {s}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
             </View>
 
-            <TextInput
-              style={styles.textArea}
-              placeholder="e.g. Near Jollibee corner, 3rd pole from left..."
-              placeholderTextColor="#9CA3AF"
-              value={landmark}
-              onChangeText={setLandmark}
-              multiline
-              numberOfLines={4}
-            />
-          </View>
+            <View style={[styles.fieldGroup, { marginBottom: 0 }]}>
+              <View style={styles.inlineHeader}>
+                <Text style={styles.fieldLabelInline}>Landmark</Text>
+                <Text style={styles.fieldMeta}>Optional</Text>
+              </View>
 
+              <TextInput
+                style={styles.textArea}
+                placeholder="e.g. Near Jollibee corner, 3rd pole from left..."
+                placeholderTextColor="#9CA3AF"
+                value={landmark}
+                onChangeText={setLandmark}
+                multiline
+                numberOfLines={3}
+              />
+            </View>
+          </View>
         </ScrollView>
 
-        {/* Fixed bottom CTA */}
         <View style={styles.ctaBar}>
-          {!canSelectPair && (
-            <View style={styles.requirementsList}>
-              {!hasGps && !poleLoading && <Text style={styles.reqItem}>• GPS location required</Text>}
-              {!photoBefore && <Text style={styles.reqItem}>• Before photo required</Text>}
-              {!photoTag && <Text style={styles.reqItem}>• Pole tag photo required</Text>}
-            </View>
-          )}
-          <TouchableOpacity
-            style={[
+          <Pressable
+            style={({ pressed }) => [
               styles.submitBtn,
-              { backgroundColor: canSelectPair ? accentColor : "#D1D5DB" },
+              {
+                backgroundColor: canSelectPair ? accentColor : "#C9CED6",
+              },
+              pressed && canSelectPair && styles.pressedDown,
             ]}
-            activeOpacity={canSelectPair ? 0.85 : 1}
             onPress={handleNext}
             disabled={!canSelectPair}
           >
             <Text style={styles.submitText}>
-              {canSelectPair ? "Select Pair  →" : "Complete required fields first"}
+              {canSelectPair
+                ? "Select Pair  →"
+                : "Complete required fields first"}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
+
+        <Modal
+          visible={viewerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setViewerOpen(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setViewerOpen(false)}
+            />
+
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>{viewerLabel}</Text>
+                  <Text style={styles.modalSubtitle}>Preview photo</Text>
+                </View>
+
+                <Pressable
+                  onPress={() => setViewerOpen(false)}
+                  style={({ pressed }) => [
+                    styles.modalCloseBtn,
+                    pressed && styles.pressedDown,
+                  ]}
+                >
+                  <Text style={styles.modalCloseText}>✕</Text>
+                </Pressable>
+              </View>
+
+              {viewerPhoto ? (
+                <ExpoImage
+                  source={{ uri: viewerPhoto.uri }}
+                  style={styles.modalImage}
+                  contentFit="cover"
+                  transition={150}
+                />
+              ) : null}
+
+              <View style={styles.modalFooter}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.modalGhostBtn,
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={() => setViewerOpen(false)}
+                >
+                  <Text style={styles.modalGhostBtnText}>Close</Text>
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.modalPrimaryBtn,
+                    { backgroundColor: accentColor },
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={() => {
+                    setViewerOpen(false);
+                    viewerRetake?.();
+                  }}
+                >
+                  <Text style={styles.modalPrimaryBtnText}>Retake</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </>
   );
@@ -848,13 +1250,18 @@ export default function PoleDetailScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#F6F8FB",
+    backgroundColor: "#F4F6F8",
   },
 
   content: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 140,
+    paddingBottom: 170,
+  },
+
+  pressedDown: {
+    opacity: 0.92,
+    transform: [{ scale: 0.99 }],
   },
 
   floatingBackBtn: {
@@ -866,268 +1273,246 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: "#E7EBEF",
     shadowColor: "#000",
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.05,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
+    elevation: 3,
   },
 
   floatingBackIcon: {
     fontSize: 28,
     color: "#111827",
-    fontWeight: "600",
+    fontWeight: "700",
     marginTop: -2,
   },
 
   heroCard: {
-    borderRadius: 24,
+    borderRadius: 30,
     overflow: "hidden",
-    marginBottom: 18,
-    minHeight: 260,
+    marginBottom: 14,
+    minHeight: 164,
+    backgroundColor: "#0B7A5A",
     shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 10,
-    position: "relative",
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 7,
   },
 
   heroBg: {
     ...StyleSheet.absoluteFillObject,
+    opacity: 1,
   },
 
-  heroOverlay: {
+  heroNoise: {
     ...StyleSheet.absoluteFillObject,
-    opacity: 0.35,
-    transform: [{ skewY: "-6deg" }, { translateY: -20 }],
+    backgroundColor: "rgba(255,255,255,0.03)",
   },
 
-  heroGridOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    opacity: 0.08,
-    padding: 4,
-  },
-
-  heroGridDot: {
-    width: "10%",
-    height: "20%",
-    borderWidth: 0.5,
-    borderColor: "#FFFFFF",
-  },
-
-  heroCurveTopRight: {
+  heroGlow: {
     position: "absolute",
-    top: -40,
     right: -30,
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    backgroundColor: "rgba(255,255,255,0.10)",
-  },
-
-  heroCurveBottomLeft: {
-    position: "absolute",
-    bottom: -36,
-    left: -24,
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: "rgba(255,255,255,0.07)",
+    top: -20,
+    width: 180,
+    height: 180,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
 
   heroContent: {
-    position: "relative",
-    zIndex: 10,
-    alignItems: "center",
-    paddingTop: 28,
-    paddingBottom: 28,
-    paddingHorizontal: 20,
-  },
-
-  heroIconWrap: {
-    width: 92,
-    height: 92,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 14,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.22)",
-  },
-
-  heroIcon: {
-    fontSize: 42,
-  },
-
-  heroTitle: {
-    fontSize: 24,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    textAlign: "center",
-    letterSpacing: -0.5,
-    marginBottom: 4,
-  },
-
-  heroSubtitle: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "rgba(255,255,255,0.7)",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    marginBottom: 20,
-  },
-
-  heroSeparator: {
-    width: "80%",
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    marginBottom: 20,
-  },
-
-  heroStatsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    width: "100%",
-    justifyContent: "space-around",
-  },
-
-  heroStatBox: {
-    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    justifyContent: "space-between",
     flex: 1,
   },
 
-  heroStatDivider: {
-    width: 1,
-    height: 34,
-    backgroundColor: "rgba(255,255,255,0.18)",
+  heroTopLine: {
+    flexDirection: "row",
+    justifyContent: "space-between",
   },
 
-  heroStatLabel: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: "rgba(255,255,255,0.55)",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    marginBottom: 5,
+  heroBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255,255,255,0.16)",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
   },
 
-  heroStatValue: {
-    fontSize: 13,
-    fontWeight: "800",
+  heroBadgeText: {
     color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+
+  heroTitle: {
+    marginTop: 18,
+    fontSize: 28,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: -0.6,
+  },
+
+  heroMeta: {
+    marginTop: 8,
+    fontSize: 13,
+    color: "rgba(255,255,255,0.82)",
+    fontWeight: "600",
   },
 
   progressCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 22,
-    padding: 16,
+    padding: 14,
     marginBottom: 18,
     borderWidth: 1,
-    borderColor: "#EEF2F7",
+    borderColor: "#EAECEF",
     shadowColor: "#0F172A",
-    shadowOpacity: 0.05,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    shadowOpacity: 0.035,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
 
-  progressHeader: {
+  progressTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    marginBottom: 10,
   },
 
   progressTitle: {
     fontSize: 15,
-    fontWeight: "800",
+    fontWeight: "900",
     color: "#111827",
   },
 
-  progressCount: {
+  progressPercent: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "900",
+  },
+
+  trackerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    marginBottom: 12,
+  },
+
+  trackerMini: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 0,
+  },
+
+  trackerMiniDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 5,
+  },
+
+  trackerMiniDotDone: {
+    backgroundColor: "#DCFCE7",
+  },
+
+  trackerMiniDotText: {
+    fontSize: 12,
+    fontWeight: "900",
     color: "#64748B",
   },
 
+  trackerMiniDotTextDone: {
+    color: "#166534",
+  },
+
+  trackerMiniLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#6B7280",
+  },
+
+  trackerMiniLabelDone: {
+    color: "#166534",
+  },
+
   progressBarTrack: {
-    height: 10,
+    height: 12,
     borderRadius: 999,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: "#E8EDF2",
     overflow: "hidden",
-    marginBottom: 14,
   },
 
   progressBarFill: {
     height: "100%",
     borderRadius: 999,
+    overflow: "hidden",
+    justifyContent: "center",
   },
 
-  stepRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-
-  stepBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "#F1F5F9",
-  },
-
-  stepBadgeDone: {
-    backgroundColor: "#DCFCE7",
-  },
-
-  stepBadgeText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#64748B",
-  },
-
-  stepBadgeTextDone: {
-    color: "#166534",
+  progressWave: {
+    position: "absolute",
+    top: -10,
+    bottom: -10,
+    width: 70,
+    backgroundColor: "rgba(255,255,255,0.24)",
+    borderRadius: 24,
   },
 
   sectionCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 22,
+    borderRadius: 24,
     padding: 16,
     marginBottom: 18,
     borderWidth: 1,
-    borderColor: "#EEF2F7",
+    borderColor: "#E9EDF2",
     shadowColor: "#0F172A",
-    shadowOpacity: 0.05,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    shadowOpacity: 0.035,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
 
   sectionHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     marginBottom: 14,
     gap: 10,
   },
 
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#111827",
+  sectionHeaderTextWrap: {
     flex: 1,
+    minWidth: 0,
+  },
+
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: "900",
+    color: "#151826",
+  },
+
+  sectionSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#667085",
+    fontWeight: "500",
   },
 
   sectionPill: {
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
+    marginTop: 2,
   },
 
   sectionPillSuccess: {
@@ -1135,7 +1520,7 @@ const styles = StyleSheet.create({
   },
 
   sectionPillMuted: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: "#F3F4F6",
   },
 
   sectionPillText: {
@@ -1148,25 +1533,33 @@ const styles = StyleSheet.create({
   },
 
   sectionPillTextMuted: {
-    color: "#64748B",
+    color: "#667085",
+  },
+
+  gpsMapBox: {
+    height: 200,
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 12,
   },
 
   gpsCardButton: {
-    borderWidth: 1.5,
-    borderRadius: 18,
+    borderWidth: 1.25,
+    borderRadius: 22,
     padding: 14,
     flexDirection: "row",
     alignItems: "center",
+    backgroundColor: "#FFFFFF",
   },
 
   gpsCardButtonSuccess: {
-    backgroundColor: "#ECFDF5",
-    borderColor: "#10B981",
+    backgroundColor: "#F7FBF9",
+    borderColor: "#CFE7DB",
   },
 
   gpsIconWrap: {
-    width: 54,
-    height: 54,
+    width: 56,
+    height: 56,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
@@ -1182,259 +1575,530 @@ const styles = StyleSheet.create({
     paddingRight: 10,
   },
 
-  gpsTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    marginBottom: 4,
+  gpsPinRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 2,
   },
 
-  gpsSubtitle: {
+  gpsPinIcon: {
+    fontSize: 14,
+  },
+
+  gpsEyebrow: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "#667085",
+    letterSpacing: 1,
+    marginBottom: 4,
+    textTransform: "uppercase",
+  },
+
+  gpsCoordinateText: {
+    fontSize: 16,
+    lineHeight: 21,
+    color: "#111827",
+    fontWeight: "900",
+  },
+
+  gpsLocationText: {
+    marginTop: 5,
     fontSize: 12,
     lineHeight: 18,
-    color: "#6B7280",
+    color: "#667085",
     fontWeight: "500",
   },
 
+  gpsCapturedAt: {
+    fontSize: 11,
+    color: "#475467",
+    fontWeight: "600",
+    marginTop: 6,
+  },
+
   gpsArrowWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#F8FAFC",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#F4F6F8",
     alignItems: "center",
     justifyContent: "center",
   },
 
   gpsArrow: {
     fontSize: 18,
-    fontWeight: "800",
-    color: "#64748B",
+    fontWeight: "900",
   },
 
-  photoStack: {
-    gap: 14,
+  gpsPendingLabel: {
+    fontSize: 11,
+    color: "#B45309",
+    fontWeight: "700",
+    marginTop: 5,
   },
 
-  photoCard: {
-    borderRadius: 22,
-    borderWidth: 1.5,
-    borderColor: "#E5E7EB",
-    overflow: "hidden",
-    backgroundColor: "#F9FAFB",
-    position: "relative",
-  },
-
-  photoCardGlow: {
-    position: "absolute",
-    top: -24,
-    right: -18,
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-  },
-
-  photoHeader: {
+  photoRow: {
     flexDirection: "row",
-    alignItems: "center",
-    padding: 14,
-    paddingBottom: 10,
+    gap: 12,
+    marginBottom: 16,
+    alignItems: "flex-start",
   },
 
-  photoHeaderIconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: "#F1F5F9",
+  photoHalf: {
+    flex: 1,
+  },
+
+  fieldGroup: {
+    marginBottom: 18,
+  },
+
+  photoTile: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#E8ECF0",
+    padding: 14,
+    alignItems: "center",
+  },
+
+  photoTileCompact: {
+    padding: 14,
+  },
+
+  photoTileTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+
+  photoTileTopCompact: {
+    marginBottom: 12,
+  },
+
+  photoTileIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "#F4F6F8",
     borderWidth: 1,
     borderColor: "#E5E7EB",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
+    marginRight: 10,
   },
 
-  photoHeaderIcon: {
-    fontSize: 24,
+  photoTileIconWrapCompact: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    marginRight: 10,
   },
 
-  photoHeaderTextWrap: {
-    flex: 1,
-    paddingRight: 8,
-  },
-
-  photoTitle: {
-    fontSize: 15,
-    fontWeight: "800",
+  photoTileIcon: {
+    fontSize: 18,
+    fontWeight: "900",
     color: "#111827",
-    marginBottom: 4,
   },
 
-  photoSubtitle: {
-    fontSize: 12,
+  photoTileIconCompact: {
+    fontSize: 16,
+  },
+
+  photoTileHeaderText: {
+    flex: 1,
+    justifyContent: "center",
+    minWidth: 0,
+    paddingTop: 1,
+  },
+
+  photoTileTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+
+  photoTileEyebrow: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+    marginBottom: 10,
+    alignSelf: "center",
+  },
+
+  photoRequiredBadge: {
+    backgroundColor: "#FFF7E7",
+    borderWidth: 1,
+    borderColor: "#F5D9A7",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+
+  photoRequiredBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#B45309",
+  },
+
+  photoTileSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#667085",
     fontWeight: "500",
-    color: "#6B7280",
+    marginTop: 7,
+  },
+
+  photoTileSubtitleCompact: {
+    fontSize: 12,
     lineHeight: 17,
+    color: "#667085",
+    fontWeight: "600",
+    marginTop: 6,
   },
 
-  photoBody: {
-    paddingHorizontal: 14,
-    paddingBottom: 12,
-  },
-
-  photoPreview: {
-    width: "100%",
-    height: 210,
+  photoPreviewWrap: {
     borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#F3F4F6",
+    width: "100%",
+  },
+
+  photoPreviewWrapCompact: {
+    borderRadius: 18,
+  },
+
+  photoThumb: {
+    width: "100%",
+    height: 190,
     backgroundColor: "#E5E7EB",
   },
 
-  photoPlaceholder: {
-    width: "100%",
-    height: 170,
-    borderRadius: 18,
-    borderWidth: 1.5,
-    borderColor: "#D1D5DB",
-    borderStyle: "dashed",
-    backgroundColor: "#FFFFFF",
+  photoThumbCompact: {
+    height: 172,
+  },
+
+  photoOverlay: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+  },
+
+  photoOverlayButton: {
+    minWidth: 56,
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: 19,
+    backgroundColor: "rgba(17,24,39,0.78)",
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
   },
 
-  photoPlaceholderIcon: {
-    fontSize: 28,
-    marginBottom: 8,
-  },
-
-  photoPlaceholderText: {
+  photoOverlayButtonText: {
+    color: "#FFFFFF",
     fontSize: 12,
-    color: "#9CA3AF",
-    textAlign: "center",
-    fontWeight: "700",
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
 
-  photoFooter: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    flexDirection: "row",
+  photoEmpty: {
+    height: 190,
     alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.2,
+    borderColor: "#D8E0E8",
+    borderStyle: "dashed",
+    borderRadius: 18,
+  },
+
+  photoEmptyCompact: {
+    height: 172,
+  },
+
+  photoEmptyIcon: {
+    fontSize: 28,
+    marginBottom: 10,
+  },
+
+  photoEmptyTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111827",
+    marginBottom: 4,
+    letterSpacing: -0.1,
+  },
+
+  photoEmptyTitleCompact: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#111827",
+  },
+
+  photoEmptySub: {
+    fontSize: 11,
+    color: "#667085",
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+
+  photoTileBottom: {
+    marginTop: 10,
+    flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     gap: 10,
   },
 
-  photoStatePill: {
+  photoSavedRow: {
+    alignItems: "center",
+    marginTop: 8,
+  },
+
+  statusChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    flexShrink: 1,
   },
 
-  photoStateText: {
-    fontSize: 11,
-    fontWeight: "800",
+  statusChipSuccess: {
+    backgroundColor: "#DDF5E8",
   },
 
-  photoActionBtn: {
-    borderRadius: 12,
-    paddingHorizontal: 14,
+  statusChipMuted: {
+    backgroundColor: "#F3F4F6",
+  },
+
+  statusChipText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
+    textTransform: "uppercase",
+  },
+
+  statusChipTextSuccess: {
+    color: "#166534",
+  },
+
+  statusChipTextMuted: {
+    color: "#667085",
+  },
+
+  captureMiniBtn: {
+    borderRadius: 14,
+    paddingHorizontal: 13,
     paddingVertical: 10,
   },
 
-  photoActionText: {
-    fontSize: 12,
-    fontWeight: "800",
+  captureMiniBtnText: {
     color: "#FFFFFF",
-    letterSpacing: 0.4,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.35,
   },
 
-  slotGrid: {
+  inlineHeader: {
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
     gap: 10,
   },
 
-  slotBtn: {
-    minWidth: 72,
-    paddingHorizontal: 20,
-    paddingVertical: 13,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
+  fieldLabelInline: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111827",
+  },
+
+  fieldMeta: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#667085",
+  },
+
+  slotRowStatic: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
+    gap: 8,
+  },
+
+  slotBtn: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    borderRadius: 999,
+    borderWidth: 1.2,
+    borderColor: "#E1E5EA",
+    backgroundColor: "#FAFAFA",
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   slotText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#374151",
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#384152",
   },
 
   textArea: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    borderWidth: 1.5,
+    backgroundColor: "#FCFCFD",
+    borderRadius: 18,
+    borderWidth: 1.2,
     borderColor: "#E5E7EB",
-    padding: 14,
-    fontSize: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 13,
     color: "#111827",
-    minHeight: 110,
+    minHeight: 84,
     textAlignVertical: "top",
-    lineHeight: 20,
+    lineHeight: 19,
   },
 
   ctaBar: {
     position: "absolute",
-    bottom: 0, left: 0, right: 0,
-    backgroundColor: "#fff",
-    paddingHorizontal: 20,
-    paddingTop: 12,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingTop: 10,
     paddingBottom: 28,
-    shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 12,
-    shadowOffset: { width: 0, height: -3 }, elevation: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: -3 },
+    elevation: 10,
     gap: 8,
   },
 
   submitBtn: {
-    borderRadius: 16,
-    paddingVertical: 17,
+    borderRadius: 20,
+    paddingVertical: 18,
     alignItems: "center",
     shadowColor: "#000",
-    shadowOpacity: 0.12,
+    shadowOpacity: 0.08,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
 
   submitText: {
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 15,
+    fontWeight: "900",
     color: "#FFFFFF",
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
 
   requirementsList: {
-    backgroundColor: "#FEF3C7",
-    borderRadius: 16,
+    backgroundColor: "#FFF7E7",
+    borderRadius: 18,
     padding: 14,
     gap: 5,
-  },
-
-  reqTitle: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#92400E",
-    marginBottom: 4,
+    borderWidth: 1,
+    borderColor: "#F5D9A7",
   },
 
   reqItem: {
     fontSize: 12,
     color: "#B45309",
+    fontWeight: "700",
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(12,16,24,0.62)",
+    justifyContent: "center",
+    padding: 18,
+  },
+
+  modalCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 14,
+    overflow: "hidden",
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#161A25",
+  },
+
+  modalSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#667085",
     fontWeight: "600",
   },
 
-  gpsPendingLabel: {
-    fontSize: 11,
-    color: "#B45309",
-    fontWeight: "600",
-    marginTop: 4,
+  modalCloseBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  modalCloseText: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111827",
+  },
+
+  modalImage: {
+    width: "100%",
+    height: 380,
+    borderRadius: 18,
+    backgroundColor: "#E5E7EB",
+  },
+
+  modalFooter: {
+    marginTop: 14,
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  modalGhostBtn: {
+    flex: 1,
+    borderRadius: 16,
+    paddingVertical: 15,
+    alignItems: "center",
+    backgroundColor: "#F3F4F6",
+  },
+
+  modalGhostBtnText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#374151",
+  },
+
+  modalPrimaryBtn: {
+    flex: 1,
+    borderRadius: 16,
+    paddingVertical: 15,
+    alignItems: "center",
+  },
+
+  modalPrimaryBtnText: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#FFFFFF",
   },
 });

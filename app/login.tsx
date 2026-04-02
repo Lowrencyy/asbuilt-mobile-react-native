@@ -1,10 +1,12 @@
 import api, { setAuthToken } from "@/lib/api";
 import { resetPrefetchSession } from "@/lib/prefetch";
 import { tokenStore } from "@/lib/token";
+import { startLocationSync } from "@/lib/location-sync";
 import TabTransitionOverlay from "@/components/TabTransitionOverlay";
-import { AntDesign, FontAwesome } from "@expo/vector-icons";
+import { AntDesign, FontAwesome, Ionicons } from "@expo/vector-icons";
+import * as LocalAuthentication from "expo-local-authentication";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +37,9 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showTransition, setShowTransition] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [hasSavedSession, setHasSavedSession] = useState(false);
+  const autoPromptDone = useRef(false);
 
   const screenOpacity = useSharedValue(1);
   const screenTranslateY = useSharedValue(0);
@@ -44,16 +49,68 @@ export default function LoginScreen() {
     transform: [{ translateY: screenTranslateY.value }],
   }));
 
+  // Check biometric capability and saved session on mount
+  useEffect(() => {
+    (async () => {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      const canUseBiometric = hasHardware && isEnrolled;
+      setBiometricAvailable(canUseBiometric);
+
+      const savedToken = await tokenStore.get();
+      setHasSavedSession(!!savedToken);
+    })();
+  }, []);
+
+  // Auto-prompt fingerprint once when screen loads if session exists
   useFocusEffect(
     useCallback(() => {
       Keyboard.dismiss();
       screenOpacity.value = withTiming(1, { duration: 300 });
       screenTranslateY.value = withTiming(0, { duration: 300 });
-    }, []),
+
+      if (!autoPromptDone.current) {
+        autoPromptDone.current = true;
+        // Small delay so the screen renders first
+        setTimeout(() => triggerBiometric(false), 400);
+      }
+    }, [biometricAvailable, hasSavedSession]),
   );
 
   function navigateToDashboard() {
     setShowTransition(true);
+  }
+
+  async function triggerBiometric(isManual: boolean) {
+    const savedToken = await tokenStore.get();
+    if (!savedToken) {
+      if (isManual) Alert.alert("No saved session", "Please log in with your email and password first.");
+      return;
+    }
+
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    if (!hasHardware || !isEnrolled) {
+      if (isManual) Alert.alert("Biometrics unavailable", "No fingerprint or face ID set up on this device.");
+      return;
+    }
+
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: "Use fingerprint to sign in",
+      cancelLabel: "Use password",
+      fallbackLabel: "Use password",
+      disableDeviceFallback: false,
+    });
+
+    if (result.success) {
+      setAuthToken(savedToken);
+      resetPrefetchSession();
+      await startLocationSync();
+      Keyboard.dismiss();
+      screenOpacity.value = withTiming(0, { duration: 350 });
+      screenTranslateY.value = withTiming(-40, { duration: 350 });
+      setTimeout(navigateToDashboard, 380);
+    }
   }
 
   async function handleLogin() {
@@ -74,6 +131,8 @@ export default function LoginScreen() {
       if (user) await tokenStore.setUser(user);
       setAuthToken(token);
       resetPrefetchSession();
+      await startLocationSync();
+      setHasSavedSession(true);
 
       Keyboard.dismiss();
       screenOpacity.value = withTiming(0, { duration: 350 });
@@ -117,6 +176,20 @@ export default function LoginScreen() {
               <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.titleWrap}>
                 <Text style={styles.title}>Login to your Account</Text>
               </Animated.View>
+
+              {/* Fingerprint button — show if biometric available + has saved session */}
+              {biometricAvailable && hasSavedSession && (
+                <Animated.View entering={FadeInDown.delay(250).springify()} style={styles.biometricWrap}>
+                  <TouchableOpacity
+                    style={styles.biometricBtn}
+                    onPress={() => triggerBiometric(true)}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="finger-print" size={32} color="#0A5C3B" />
+                  </TouchableOpacity>
+                  <Text style={styles.biometricLabel}>Tap to sign in with fingerprint</Text>
+                </Animated.View>
+              )}
 
               {/* Email */}
               <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.inputWrap}>
@@ -221,12 +294,32 @@ const styles = StyleSheet.create({
     width: 200,
     height: 80,
   },
-  titleWrap: { marginBottom: 32 },
+  titleWrap: { marginBottom: 24 },
   title: {
     fontSize: 20,
     fontWeight: "600",
     color: "#1f2937",
     textAlign: "center",
+  },
+  biometricWrap: {
+    alignItems: "center",
+    marginBottom: 24,
+  },
+  biometricBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 1.5,
+    borderColor: "#0A5C3B",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f0faf5",
+    marginBottom: 8,
+  },
+  biometricLabel: {
+    fontSize: 12,
+    color: "#0A5C3B",
+    fontWeight: "600",
   },
   inputWrap: { marginBottom: 16 },
   input: {

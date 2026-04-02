@@ -1,5 +1,14 @@
 import { Tabs, usePathname, useRouter } from "expo-router";
+import * as NavigationBar from "expo-navigation-bar";
 import React, { useCallback, useEffect, useState } from "react";
+import { AppState, Dimensions, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+const { width: SW } = Dimensions.get("window");
+// Compact tab bar on narrow screens (< 360px wide, e.g. small Android phones)
+const TAB_HEIGHT    = SW < 360 ? 60 : 74;
+const TAB_RADIUS    = SW < 360 ? 16 : 22;
+const TAB_FONT_SIZE = SW < 360 ?  9 : 10;
 
 
 import { AnimatedTabButton } from "@/components/AnimatedTabButton";
@@ -12,6 +21,26 @@ import { tokenStore } from "@/lib/token";
 export default function TabLayout() {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const androidBottom = Platform.OS === "android" ? insets.bottom : 0;
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const hideNav = () => {
+      NavigationBar.setVisibilityAsync("hidden");
+      NavigationBar.setBehaviorAsync("overlay-swipe");
+    };
+
+    hideNav();
+
+    // Re-hide when app comes back to foreground (Android resets it)
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") hideNav();
+    });
+
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (isPrefetchDone()) return;
@@ -57,27 +86,41 @@ export default function TabLayout() {
   return (
     <>
       <Tabs
+        safeAreaInsets={Platform.OS === "android" ? { bottom: 0 } : undefined}
         screenOptions={{
           headerShown: false,
           tabBarActiveTintColor: "#0A5C3B",
-          tabBarInactiveTintColor: "#9AA3B2",
+          tabBarInactiveTintColor: "#281C59",
           tabBarShowLabel: true,
           tabBarLabelStyle: {
-            fontSize: 10,
+            fontSize: TAB_FONT_SIZE,
             fontWeight: "700",
             marginBottom: 6,
           },
-          tabBarStyle: {
+          tabBarStyle: Platform.OS === "android" ? {
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: TAB_HEIGHT + androidBottom,
+            paddingTop: 8,
+            paddingBottom: androidBottom + 8,
+            borderTopLeftRadius: TAB_RADIUS,
+            borderTopRightRadius: TAB_RADIUS,
+            backgroundColor: "#ffffff",
+            borderTopWidth: 0,
+            elevation: 8,
+          } : {
             position: "absolute",
             left: 16,
             right: 16,
             bottom: 16,
-            height: 74,
-            borderRadius: 22,
-            backgroundColor: "#ffffff",
-            borderTopWidth: 0,
+            height: TAB_HEIGHT,
             paddingTop: 8,
             paddingBottom: 8,
+            borderRadius: TAB_RADIUS,
+            backgroundColor: "#ffffff",
+            borderTopWidth: 0,
             shadowColor: "#000",
             shadowOpacity: 0.06,
             shadowRadius: 14,
@@ -119,7 +162,7 @@ export default function TabLayout() {
         <Tabs.Screen
           name="tasks"
           options={{
-            title: "Tasks",
+            title: "TD Logs",
             tabBarButton: (props) => (
               <AnimatedTabButton
                 {...props}
@@ -182,6 +225,12 @@ export default function TabLayout() {
           name="profile"
           options={{
             title: "Profile",
+            tabBarButton: (props) => (
+              <AnimatedTabButton
+                {...props}
+                onPress={() => startTabTransition("/(tabs)/profile")}
+              />
+            ),
             tabBarIcon: ({ color, focused }) => (
               <IconSymbol
                 size={focused ? 24 : 22}

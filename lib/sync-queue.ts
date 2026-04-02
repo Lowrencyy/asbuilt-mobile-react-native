@@ -6,6 +6,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 
 import api from "./api";
+import { cacheSet } from "./cache";
 
 const QUEUE_FILE = `${FileSystem.documentDirectory}sync_queue.json`;
 
@@ -15,6 +16,9 @@ export type QueueEntry = {
   photoPaths: Record<string, string>;
   draftDir: string;
   poleDraftDir: string;
+  fromPoleId?: string;
+  nodeId?: string;
+  poleAfterPath?: string; // path to delete from pole_drafts after success
   queuedAt: string;
 };
 
@@ -52,7 +56,7 @@ export async function queueCount(): Promise<number> {
 
 /**
  * Try to submit every queued entry.
- * Called on app start (inside prefetchAll flow).
+ * Called by net-sync every 60 s (and on foreground).
  * Never throws — safe to fire-and-forget.
  */
 export async function processSyncQueue(): Promise<void> {
@@ -80,14 +84,26 @@ export async function processSyncQueue(): Promise<void> {
 
       await api.post("/teardown-logs", form);
 
-      // Success — clean up local drafts
+      // Success — bust caches and clean up teardown draft only
+      await cacheSet("teardown_logs", null);
+      if (entry.fromPoleId) {
+        await cacheSet(`spans_pole_${entry.fromPoleId}`, null);
+        // Mark pole as submitted — future spans skip re-uploading before/tag
+        await cacheSet(`pole_submitted_${entry.fromPoleId}`, true);
+      }
+      if (entry.nodeId) {
+        await cacheSet(`node_logs_${entry.nodeId}`, null);
+      }
       await FileSystem.deleteAsync(entry.draftDir, { idempotent: true }).catch(() => {});
-      await FileSystem.deleteAsync(entry.poleDraftDir, { idempotent: true }).catch(() => {});
+      // Delete the `after` from pole_drafts so pole-detail shows blank for next span
+      if (entry.poleAfterPath) {
+        await FileSystem.deleteAsync(entry.poleAfterPath, { idempotent: true }).catch(() => {});
+      }
+      // poleDraftDir kept intentionally — before/tag reused for other spans
     } catch (e: any) {
       if (e?.response?.status === 409) {
-        // Already submitted on the server — clean up and discard
+        // Already submitted on the server — clean up teardown draft only
         await FileSystem.deleteAsync(entry.draftDir, { idempotent: true }).catch(() => {});
-        await FileSystem.deleteAsync(entry.poleDraftDir, { idempotent: true }).catch(() => {});
       } else {
         // Network error or other server error — keep for next retry
         remaining.push(entry);
