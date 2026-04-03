@@ -414,17 +414,32 @@ export default function PoleDetailScreen() {
   const [spans, setSpans] = useState<Span[]>([]);
 
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [qualityAlertOpen, setQualityAlertOpen] = useState(false);
+  const [qualityRetakeFn, setQualityRetakeFn] = useState<(() => void) | null>(null);
   const [viewerLabel, setViewerLabel] = useState("");
   const [viewerPhoto, setViewerPhoto] = useState<PhotoField>(null);
   const [viewerRetake, setViewerRetake] = useState<(() => void) | null>(null);
 
+  // Work timer
+  const timerStartRef = useRef(Date.now());
+  const [elapsedSecs, setElapsedSecs] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setElapsedSecs(Math.floor((Date.now() - timerStartRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Draft recovery
+  const [draftRestored, setDraftRestored] = useState(false);
+
   const projFolder = sanitize(project_name);
-  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_code}/`;
+  const draftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${node_id ?? "node"}/${pole_id}/`;
   const gpsDraftKey = `pole_gps_${pole_id}`;
   const F = {
-    before: `pole_${pole_code}_before.jpg`,
-    after: `pole_${pole_code}_after.jpg`,
-    tag: `pole_${pole_code}_poletag.jpg`,
+    before: `pole_${pole_id}_before.jpg`,
+    after: `pole_${pole_id}_after.jpg`,
+    tag: `pole_${pole_id}_poletag.jpg`,
   };
 
   const setGpsDraftState = useCallback((draft: GpsDraft) => {
@@ -573,6 +588,7 @@ export default function PoleDetailScreen() {
       if (pb) setPhotoBefore(pb);
       if (pa) setPhotoAfter(pa);
       if (pt) setPhotoTag(pt);
+      if (pb || pa || pt) setDraftRestored(true);
     })();
   }, [
     pole_id,
@@ -603,6 +619,20 @@ export default function PoleDetailScreen() {
       })
       .catch(() => {});
   }, [lat, lng]);
+
+  // Dark/blurry images compress to very small files (low entropy).
+  // At quality: 1 (no compression), a good field photo is typically 500KB+.
+  // Below 200KB at full quality almost always means dark or severely blurry.
+  async function checkPhotoQuality(fileUri: string): Promise<"ok" | "poor"> {
+    try {
+      const info = await FileSystem.getInfoAsync(fileUri);
+      if (!info.exists) return "ok";
+      const bytes = (info as any).size ?? 0;
+      return bytes < 200 * 1024 ? "poor" : "ok";
+    } catch {
+      return "ok";
+    }
+  }
 
   async function compressPhoto(uri: string): Promise<string> {
     try {
@@ -651,7 +681,7 @@ export default function PoleDetailScreen() {
 
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.5,
+      quality: 1,
       allowsEditing: false,
     });
 
@@ -673,6 +703,14 @@ export default function PoleDetailScreen() {
       if (modalLabel && viewerLabel === modalLabel) {
         setViewerPhoto(saved);
       }
+
+      const quality = await checkPhotoQuality(saved.fileUri);
+      if (quality === "poor") {
+        setQualityRetakeFn(() => () => openCamera(setter, fileName, modalLabel));
+        setQualityAlertOpen(true);
+        return;
+      }
+
     } catch (e: any) {
       Alert.alert("Photo Error", e?.message ?? "Failed to save photo.");
     }
@@ -895,9 +933,23 @@ export default function PoleDetailScreen() {
             </View>
           </View>
 
+          {draftRestored ? (
+            <View style={styles.draftBanner}>
+              <Text style={styles.draftBannerText}>
+                ↩  Draft restored from previous session
+              </Text>
+            </View>
+          ) : null}
+
           <View style={styles.progressCard}>
             <View style={styles.progressTopRow}>
               <Text style={styles.progressTitle}>Completion Tracker</Text>
+              <View style={styles.timerBadge}>
+                <Text style={styles.timerText}>
+                  ⏱ {String(Math.floor(elapsedSecs / 60)).padStart(2, "0")}:
+                  {String(elapsedSecs % 60).padStart(2, "0")}
+                </Text>
+              </View>
               <Text style={[styles.progressPercent, { color: accentColor }]}>
                 {progress.percent}%
               </Text>
@@ -1235,6 +1287,57 @@ export default function PoleDetailScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* Quality Alert Modal */}
+        <Modal
+          visible={qualityAlertOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setQualityAlertOpen(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setQualityAlertOpen(false)}
+            />
+            <View style={styles.qualityAlertCard}>
+              <View style={styles.qualityAlertIconWrap}>
+                <Text style={styles.qualityAlertIcon}>⚠️</Text>
+              </View>
+              <Text style={styles.qualityAlertTitle}>Low Quality Detected</Text>
+              <Text style={styles.qualityAlertBody}>
+                This photo appears to be{" "}
+                <Text style={styles.qualityAlertBold}>too dark or blurry</Text>.
+                {"\n"}Please retake for a clearer image.
+              </Text>
+              <View style={styles.qualityAlertActions}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.qualityKeepBtn,
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={() => setQualityAlertOpen(false)}
+                >
+                  <Text style={styles.qualityKeepBtnText}>Keep Anyway</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.qualityRetakeBtn,
+                    { backgroundColor: accentColor },
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={() => {
+                    setQualityAlertOpen(false);
+                    qualityRetakeFn?.();
+                  }}
+                >
+                  <Text style={styles.qualityRetakeBtnText}>Retake Photo</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
       </SafeAreaView>
     </>
   );
@@ -2094,4 +2197,119 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#FFFFFF",
   },
+
+  qualityAlertCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 28,
+    padding: 24,
+    marginHorizontal: 24,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+
+  qualityAlertIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: "#FFF7E7",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+
+  qualityAlertIcon: {
+    fontSize: 30,
+  },
+
+  qualityAlertTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#111827",
+    marginBottom: 10,
+    textAlign: "center",
+  },
+
+  qualityAlertBody: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: "#667085",
+    fontWeight: "500",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+
+  qualityAlertBold: {
+    fontWeight: "800",
+    color: "#B45309",
+  },
+
+  qualityAlertActions: {
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+  },
+
+  qualityKeepBtn: {
+    flex: 1,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    backgroundColor: "#F3F4F6",
+  },
+
+  qualityKeepBtnText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#374151",
+  },
+
+  qualityRetakeBtn: {
+    flex: 1,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+
+  qualityRetakeBtnText: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#FFFFFF",
+  },
+
+  // Draft recovery banner
+  draftBanner: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  draftBannerText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1D4ED8",
+  },
+
+  // Work timer
+  timerBadge: {
+    backgroundColor: "#F3F4F6",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  timerText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#374151",
+    letterSpacing: 0.5,
+  },
+
 });

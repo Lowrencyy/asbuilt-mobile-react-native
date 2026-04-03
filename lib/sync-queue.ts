@@ -54,6 +54,15 @@ export async function queueCount(): Promise<number> {
   return entries.length;
 }
 
+export async function queueReadAll(): Promise<QueueEntry[]> {
+  return readQueue();
+}
+
+export async function queueRemove(id: string): Promise<void> {
+  const entries = await readQueue();
+  await writeQueue(entries.filter((e) => e.id !== id));
+}
+
 /**
  * Try to submit every queued entry.
  * Called by net-sync every 60 s (and on foreground).

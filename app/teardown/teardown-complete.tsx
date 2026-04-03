@@ -1,5 +1,7 @@
+import * as FileSystem from "expo-file-system/legacy";
+import { Image as ExpoImage } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Modal,
   Pressable,
@@ -9,233 +11,453 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp, ZoomIn } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { WebView } from "react-native-webview";
 
 const PRIMARY = "#0A5C3B";
 
-export default function TeardownCompleteScreen() {
-  const {
-    from_pole_code,
-    from_pole_name,
-    to_pole_id,
-    to_pole_code,
-    to_pole_name,
-    node_id,
-    project_id,
-    project_name,
-    accent,
-    span_id,
-    cable_collected,
-    expected_cable,
-    length_meters,
-    node_count,
-    amplifier_count,
-    extender_count,
-    tsc_count,
-    ps_count,
-    ps_housing_count,
-    submitted_at,
-  } = useLocalSearchParams<Record<string, string>>();
+type PhotoFile = { uri: string; label: string } | null;
 
-  const [showLog, setShowLog] = useState(false);
+function buildSpanMapHtml(
+  fromLat: number, fromLng: number, fromLabel: string,
+  toLat: number, toLng: number, toLabel: string,
+  accent: string,
+) {
+  const midLat = (fromLat + toLat) / 2;
+  const midLng = (fromLng + toLng) / 2;
+  return `<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body,#map{width:100%;height:100%;background:#f0f4f8;}
+.leaflet-div-icon{background:none!important;border:none!important;}
+.pin{display:flex;flex-direction:column;align-items:center;}
+.pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);}
+.pin-label{margin-top:3px;background:rgba(15,23,42,0.82);color:#fff;font-size:9px;font-weight:700;padding:2px 5px;border-radius:4px;white-space:nowrap;}
+</style>
+</head><body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var map=L.map('map',{zoomControl:true,scrollWheelZoom:false,dragging:true,doubleClickZoom:false,touchZoom:true}).setView([${midLat},${midLng}],16);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:20}).addTo(map);
+var fromIcon=L.divIcon({className:'',html:'<div class="pin"><div class="pin-dot" style="background:${accent}"></div><div class="pin-label">${fromLabel}</div></div>',iconAnchor:[7,7]});
+var toIcon=L.divIcon({className:'',html:'<div class="pin"><div class="pin-dot" style="background:#6366F1"></div><div class="pin-label">${toLabel}</div></div>',iconAnchor:[7,7]});
+L.marker([${fromLat},${fromLng}],{icon:fromIcon}).addTo(map);
+L.marker([${toLat},${toLng}],{icon:toIcon}).addTo(map);
+L.polyline([[${fromLat},${fromLng}],[${toLat},${toLng}]],{color:'${accent}',weight:3,opacity:0.75,dashArray:'6,4'}).addTo(map);
+var bounds=L.latLngBounds([[${fromLat},${fromLng}],[${toLat},${toLng}]]);
+map.fitBounds(bounds,{padding:[44,44],maxZoom:18});
+setTimeout(function(){map.invalidateSize();},120);
+</script>
+</body></html>`;
+}
+
+function sanitize(s?: string) {
+  return (s ?? "").toLowerCase().trim().replace(/[^a-z0-9_-]/g, "_");
+}
+
+export default function TeardownCompleteScreen() {
+  const params = useLocalSearchParams<Record<string, string>>();
+
+  const {
+    from_pole_code, from_pole_name,
+    to_pole_id, to_pole_code, to_pole_name,
+    node_id, project_id, project_name,
+    accent, span_id,
+    cable_collected, expected_cable, length_meters, recovered_cable, cable_reason,
+    node_count, amplifier_count, extender_count,
+    tsc_count, ps_count, ps_housing_count,
+    submitted_at,
+    from_pole_id,
+    from_pole_latitude, from_pole_longitude,
+    to_pole_latitude, to_pole_longitude,
+    pole_draft_dir, teardown_draft_dir, to_code_sanitized,
+  } = params;
 
   const accentColor = accent || PRIMARY;
+
+  const fromLat = Number(from_pole_latitude) || null;
+  const fromLng = Number(from_pole_longitude) || null;
+  const toLat   = Number(to_pole_latitude)   || null;
+  const toLng   = Number(to_pole_longitude)   || null;
+  const hasCoords = !!(fromLat && fromLng && toLat && toLng);
+
   const dateStr = submitted_at
     ? new Date(submitted_at).toLocaleString("en-PH", { timeZone: "Asia/Manila", dateStyle: "medium", timeStyle: "short" })
     : new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila", dateStyle: "medium", timeStyle: "short" });
 
+  const [photos, setPhotos] = useState<PhotoFile[]>([]);
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  const [viewerLabel, setViewerLabel] = useState("");
+
+  useEffect(() => {
+    loadPhotos();
+  }, []);
+
+  async function loadPhotos() {
+    const toCode = to_code_sanitized || sanitize(to_pole_code);
+    const poleDir = pole_draft_dir || "";
+    const tdDir   = teardown_draft_dir || "";
+
+    const candidates: { dir: string; file: string; label: string }[] = [
+      { dir: poleDir, file: `pole_${from_pole_id}_before.jpg`,   label: "From Before" },
+      { dir: poleDir, file: `pole_${from_pole_id}_after.jpg`,    label: "From After" },
+      { dir: poleDir, file: `pole_${from_pole_id}_poletag.jpg`,  label: "From Tag" },
+      { dir: tdDir,   file: `${toCode}_before.jpg`,              label: "To Before" },
+      { dir: tdDir,   file: `${toCode}_after.jpg`,               label: "To After" },
+      { dir: tdDir,   file: `${toCode}_poletag.jpg`,             label: "To Tag" },
+    ];
+
+    const found: PhotoFile[] = [];
+    for (const { dir, file, label } of candidates) {
+      if (!dir) continue;
+      const info = await FileSystem.getInfoAsync(dir + file).catch(() => ({ exists: false }));
+      if (info.exists) found.push({ uri: (info as any).uri, label });
+    }
+    setPhotos(found);
+  }
+
   function goToNext() {
     router.replace({
       pathname: "/projects/pole-detail" as any,
-      params: {
-        pole_id:      to_pole_id,
-        pole_code:    to_pole_code,
-        pole_name:    to_pole_name,
-        node_id,
-        project_id,
-        project_name,
-        accent,
-      },
+      params: { pole_id: to_pole_id, pole_code: to_pole_code, pole_name: to_pole_name, node_id, project_id, project_name, accent },
     });
   }
 
+  const components = [
+    { label: "Node",          count: node_count ?? "0",          expected: "—" },
+    { label: "Amplifier",     count: amplifier_count ?? "0",     expected: "—" },
+    { label: "Extender",      count: extender_count ?? "0",      expected: "—" },
+    { label: "TSC",           count: tsc_count ?? "0",           expected: "—" },
+    { label: "Power Supply",  count: ps_count ?? "0",            expected: "—" },
+    { label: "PS Housing",    count: ps_housing_count ?? "0",    expected: "—" },
+  ].filter((c) => Number(c.count) > 0);
+
   return (
-    <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 
-        {/* ── Check icon ── */}
-        <Animated.View entering={ZoomIn.delay(80).springify()} style={styles.iconWrap}>
-          <View style={styles.iconCircle}>
-            <Text style={styles.iconText}>✓</Text>
+        {/* ── Check badge ── */}
+        <View style={styles.checkBadge}>
+          <View style={[styles.checkCircle, { backgroundColor: `${accentColor}18` }]}>
+            <Text style={[styles.checkIcon, { color: accentColor }]}>✓</Text>
           </View>
-        </Animated.View>
+          <Text style={styles.titleText}>Teardown Complete</Text>
+          <Text style={styles.subtitleText}>{dateStr}</Text>
+        </View>
 
-        {/* ── Title ── */}
-        <Animated.View entering={FadeInDown.delay(200)} style={{ alignItems: "center", marginBottom: 6 }}>
-          <Text style={styles.title}>Teardown Complete</Text>
-          <Text style={styles.subtitle}>{dateStr}</Text>
-        </Animated.View>
+        {/* ── Span map card ── */}
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>COMPLETED SPAN</Text>
 
-        {/* ── Span card ── */}
-        <Animated.View entering={FadeInDown.delay(300)} style={styles.spanCard}>
-          <Text style={styles.spanLabel}>Completed Span</Text>
-          <View style={styles.spanRow}>
-            <View style={styles.poleChip}>
-              <Text style={styles.poleChipText}>{from_pole_code ?? "—"}</Text>
+          <View style={styles.spanPoleRow}>
+            <View style={styles.spanPoleBox}>
+              <View style={[styles.spanPoleDot, { backgroundColor: accentColor }]} />
+              <Text style={[styles.spanPoleCode, { color: accentColor }]} numberOfLines={1}>
+                {from_pole_code || "—"}
+              </Text>
+              <Text style={styles.spanPoleLabel}>From</Text>
             </View>
-            <Text style={styles.arrow}>→</Text>
-            <View style={[styles.poleChip, { backgroundColor: "#dbeafe" }]}>
-              <Text style={[styles.poleChipText, { color: "#1e40af" }]}>{to_pole_code ?? "—"}</Text>
+
+            <View style={styles.spanConnector}>
+              <View style={[styles.spanLine, { borderColor: `${accentColor}50` }]} />
+              {length_meters ? (
+                <View style={[styles.spanDistBadge, { backgroundColor: `${accentColor}12` }]}>
+                  <Text style={[styles.spanDistText, { color: accentColor }]}>{length_meters}m</Text>
+                </View>
+              ) : null}
+              <View style={[styles.spanLine, { borderColor: `${accentColor}50` }]} />
+            </View>
+
+            <View style={styles.spanPoleBox}>
+              <View style={[styles.spanPoleDot, { backgroundColor: "#6366F1" }]} />
+              <Text style={[styles.spanPoleCode, { color: "#6366F1" }]} numberOfLines={1}>
+                {to_pole_code || "—"}
+              </Text>
+              <Text style={styles.spanPoleLabel}>To</Text>
             </View>
           </View>
-          <Text style={styles.nodeText}>Node: {project_name ?? ""} · {node_id ?? ""}</Text>
-        </Animated.View>
+
+          {hasCoords ? (
+            <View style={styles.mapWrap}>
+              <WebView
+                style={StyleSheet.absoluteFillObject}
+                scrollEnabled={false}
+                originWhitelist={["*"]}
+                javaScriptEnabled
+                domStorageEnabled
+                mixedContentMode="always"
+                cacheEnabled={false}
+                source={{
+                  html: buildSpanMapHtml(
+                    fromLat!, fromLng!, from_pole_code || "FROM",
+                    toLat!, toLng!, to_pole_code || "TO",
+                    accentColor,
+                  ),
+                  baseUrl: "https://local.telcovantage/",
+                }}
+              />
+            </View>
+          ) : (
+            <View style={styles.mapFallback}>
+              <Text style={styles.mapFallbackText}>🗺 Map unavailable</Text>
+            </View>
+          )}
+
+          <Text style={styles.nodeText}>
+            {project_name}  ·  Node {node_id}  {span_id ? `·  Span #${span_id}` : ""}
+          </Text>
+        </View>
+
+        {/* ── Cable summary ── */}
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>CABLE</Text>
+          <View style={styles.infoRow}>
+            <View style={styles.infoCell}>
+              <Text style={styles.infoCellLabel}>Status</Text>
+              <Text style={[styles.infoCellValue, { color: cable_collected === "1" ? "#16A34A" : "#DC2626" }]}>
+                {cable_collected === "1" ? "All Collected" : "Partial"}
+              </Text>
+            </View>
+            {recovered_cable ? (
+              <View style={styles.infoCell}>
+                <Text style={styles.infoCellLabel}>Recovered</Text>
+                <Text style={styles.infoCellValue}>{recovered_cable}m</Text>
+              </View>
+            ) : null}
+            {expected_cable ? (
+              <View style={styles.infoCell}>
+                <Text style={styles.infoCellLabel}>Expected</Text>
+                <Text style={styles.infoCellValue}>{expected_cable}m</Text>
+              </View>
+            ) : null}
+          </View>
+          {cable_reason ? (
+            <Text style={styles.cableReason}>Reason: {cable_reason}</Text>
+          ) : null}
+        </View>
+
+        {/* ── Components ── */}
+        {components.length > 0 ? (
+          <View style={styles.card}>
+            <Text style={styles.cardLabel}>COMPONENTS COLLECTED</Text>
+            <View style={styles.compGrid}>
+              {components.map((c) => (
+                <View key={c.label} style={[styles.compChip, { borderColor: `${accentColor}30`, backgroundColor: `${accentColor}08` }]}>
+                  <Text style={[styles.compCount, { color: accentColor }]}>{c.count}</Text>
+                  <Text style={styles.compLabel}>{c.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {/* ── Photo review ── */}
+        {photos.length > 0 ? (
+          <View style={styles.card}>
+            <Text style={styles.cardLabel}>PHOTO REVIEW</Text>
+            <View style={styles.photoGrid}>
+              {photos.map((p) =>
+                p ? (
+                  <Pressable
+                    key={p.label}
+                    onPress={() => { setViewerUri(p.uri); setViewerLabel(p.label); }}
+                    style={({ pressed }) => [styles.photoItem, pressed && { opacity: 0.85 }]}
+                  >
+                    <ExpoImage source={{ uri: p.uri }} style={styles.photoThumb} contentFit="cover" />
+                    <Text style={styles.photoLabel} numberOfLines={1}>{p.label}</Text>
+                  </Pressable>
+                ) : null,
+              )}
+            </View>
+          </View>
+        ) : null}
 
         {/* ── Primary action ── */}
-        <Animated.View entering={FadeInDown.delay(400)} style={{ width: "100%" }}>
-          <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: accentColor }]} onPress={goToNext} activeOpacity={0.85}>
-            <Text style={styles.primaryBtnText}>Go to Next  →</Text>
-            <Text style={styles.primaryBtnSub}>Continue teardown on {to_pole_code}</Text>
-          </TouchableOpacity>
-        </Animated.View>
+        <TouchableOpacity
+          style={[styles.primaryBtn, { backgroundColor: accentColor }]}
+          onPress={goToNext}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.primaryBtnText}>Go to Next Pole →</Text>
+          <Text style={styles.primaryBtnSub}>Continue teardown on {to_pole_code}</Text>
+        </TouchableOpacity>
 
         {/* ── Secondary actions ── */}
-        <Animated.View entering={FadeInUp.delay(500)} style={styles.secondaryRow}>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => setShowLog(true)} activeOpacity={0.8}>
-            <Text style={styles.secondaryIcon}>📋</Text>
-            <Text style={styles.secondaryLabel}>View Teardown{"\n"}Logs</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => router.replace("/(tabs)/tasks" as any)}
-            activeOpacity={0.8}
-          >
+        <View style={styles.secondaryRow}>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.replace("/(tabs)/tasks" as any)} activeOpacity={0.8}>
             <Text style={styles.secondaryIcon}>📊</Text>
-            <Text style={styles.secondaryLabel}>View Daily{"\n"}Reports</Text>
+            <Text style={styles.secondaryLabel}>Daily{"\n"}Reports</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => router.replace("/(tabs)" as any)}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.replace("/(tabs)" as any)} activeOpacity={0.8}>
             <Text style={styles.secondaryIcon}>🏠</Text>
-            <Text style={styles.secondaryLabel}>Go to{"\n"}Dashboard</Text>
+            <Text style={styles.secondaryLabel}>Dashboard</Text>
           </TouchableOpacity>
-        </Animated.View>
+        </View>
       </ScrollView>
 
-      {/* ── Log details modal ── */}
-      <Modal visible={showLog} animationType="slide" transparent statusBarTranslucent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowLog(false)} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>Teardown Log Details</Text>
-
-          <ScrollView showsVerticalScrollIndicator={false}>
-            <Row label="From Pole"   value={`${from_pole_code ?? "—"}  ${from_pole_name ? `(${from_pole_name})` : ""}`} />
-            <Row label="To Pole"     value={`${to_pole_code ?? "—"}  ${to_pole_name ? `(${to_pole_name})` : ""}`} />
-            <Row label="Node"        value={node_id ?? "—"} />
-            <Row label="Project"     value={project_name ?? "—"} />
-            <Row label="Submitted"   value={dateStr} />
-            <Row label="Span ID"     value={span_id ?? "—"} />
-
-            <View style={styles.divider} />
-            <Text style={styles.sectionHead}>Cable</Text>
-            <Row label="Collected"   value={cable_collected === "1" ? "Yes" : "No"} />
-            <Row label="Length"      value={length_meters ? `${Number(length_meters).toLocaleString()} m` : "—"} />
-            <Row label="Expected"    value={expected_cable ? `${Number(expected_cable).toLocaleString()} m` : "—"} />
-
-            <View style={styles.divider} />
-            <Text style={styles.sectionHead}>Components</Text>
-            <Row label="Node"           value={node_count      ?? "0"} />
-            <Row label="Amplifier"      value={amplifier_count ?? "0"} />
-            <Row label="Extender"       value={extender_count  ?? "0"} />
-            <Row label="TSC"            value={tsc_count       ?? "0"} />
-            <Row label="Power Supply"   value={ps_count        ?? "0"} />
-            <Row label="PS Housing"     value={ps_housing_count ?? "0"} />
-          </ScrollView>
-
-          <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: PRIMARY, marginTop: 16 }]} onPress={() => setShowLog(false)}>
-            <Text style={styles.primaryBtnText}>Close</Text>
-          </TouchableOpacity>
+      {/* ── Photo viewer modal ── */}
+      <Modal visible={!!viewerUri} transparent animationType="fade" onRequestClose={() => setViewerUri(null)}>
+        <View style={styles.viewerBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerUri(null)} />
+          <View style={styles.viewerCard}>
+            <View style={styles.viewerHeader}>
+              <Text style={styles.viewerTitle}>{viewerLabel}</Text>
+              <Pressable onPress={() => setViewerUri(null)} style={styles.viewerClose}>
+                <Text style={styles.viewerCloseText}>✕</Text>
+              </Pressable>
+            </View>
+            {viewerUri ? (
+              <ExpoImage source={{ uri: viewerUri }} style={styles.viewerImage} contentFit="cover" transition={150} />
+            ) : null}
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={rowStyles.row}>
-      <Text style={rowStyles.label}>{label}</Text>
-      <Text style={rowStyles.value}>{value}</Text>
-    </View>
-  );
-}
-
-const rowStyles = StyleSheet.create({
-  row:   { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  label: { fontSize: 13, color: "#6b7280", fontWeight: "600", flex: 1 },
-  value: { fontSize: 13, color: "#111827", fontWeight: "700", flex: 2, textAlign: "right" },
-});
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8faf9" },
-  content:   { alignItems: "center", paddingHorizontal: 20, paddingTop: 32, paddingBottom: 40 },
+  root:    { flex: 1, backgroundColor: "#F4F6F8" },
+  content: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 40 },
 
-  iconWrap:   { marginBottom: 20 },
-  iconCircle: {
-    width: 90, height: 90, borderRadius: 45,
-    backgroundColor: "#dcfce7",
+  checkBadge: { alignItems: "center", marginBottom: 20 },
+  checkCircle: {
+    width: 72, height: 72, borderRadius: 36,
     alignItems: "center", justifyContent: "center",
-    shadowColor: PRIMARY, shadowOpacity: 0.2, shadowRadius: 16, shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    marginBottom: 12,
   },
-  iconText: { fontSize: 44, color: PRIMARY },
+  checkIcon:    { fontSize: 36, fontWeight: "900" },
+  titleText:    { fontSize: 22, fontWeight: "900", color: "#111827", letterSpacing: -0.5 },
+  subtitleText: { fontSize: 12, color: "#6B7280", marginTop: 4 },
 
-  title:    { fontSize: 24, fontWeight: "900", color: "#111827", letterSpacing: -0.5 },
-  subtitle: { fontSize: 13, color: "#6b7280", marginTop: 4 },
-
-  spanCard: {
-    width: "100%", backgroundColor: "#fff", borderRadius: 20, padding: 18, marginTop: 20,
-    borderWidth: 1, borderColor: "#e5e7eb",
-    shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 3,
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#E9EDF2",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
-  spanLabel:    { fontSize: 10, fontWeight: "800", color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 },
-  spanRow:      { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 },
-  poleChip:     { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: "#dcfce7" },
-  poleChipText: { fontSize: 14, fontWeight: "800", color: PRIMARY },
-  arrow:        { fontSize: 18, color: "#9ca3af", fontWeight: "700" },
-  nodeText:     { fontSize: 12, color: "#6b7280", fontWeight: "600" },
+
+  cardLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#9CA3AF",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    marginBottom: 12,
+  },
+
+  spanPoleRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
+  spanPoleBox: { alignItems: "center", width: 80 },
+  spanPoleDot: { width: 12, height: 12, borderRadius: 6, marginBottom: 4 },
+  spanPoleCode: { fontSize: 13, fontWeight: "900", textAlign: "center" },
+  spanPoleLabel: { fontSize: 10, color: "#9CA3AF", fontWeight: "600", marginTop: 2 },
+  spanConnector: { flex: 1, flexDirection: "row", alignItems: "center" },
+  spanLine: { flex: 1, borderTopWidth: 2, borderStyle: "dashed" },
+  spanDistBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  spanDistText: { fontSize: 11, fontWeight: "800" },
+
+  mapWrap: {
+    height: 200,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "#F0F4F8",
+    marginBottom: 12,
+  },
+  mapFallback: {
+    height: 80,
+    borderRadius: 14,
+    backgroundColor: "#F8FAFC",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  mapFallbackText: { fontSize: 13, color: "#9CA3AF" },
+
+  nodeText: { fontSize: 12, color: "#6B7280", fontWeight: "600" },
+
+  infoRow: { flexDirection: "row", gap: 12 },
+  infoCell: { flex: 1, backgroundColor: "#F8FAFC", borderRadius: 12, padding: 12 },
+  infoCellLabel: { fontSize: 10, fontWeight: "700", color: "#9CA3AF", marginBottom: 4, textTransform: "uppercase" },
+  infoCellValue: { fontSize: 16, fontWeight: "900", color: "#111827" },
+
+  cableReason: { fontSize: 12, color: "#6B7280", marginTop: 10, fontStyle: "italic" },
+
+  compGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  compChip: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    minWidth: 90,
+  },
+  compCount: { fontSize: 22, fontWeight: "900" },
+  compLabel: { fontSize: 11, fontWeight: "600", color: "#6B7280", marginTop: 2 },
+
+  photoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  photoItem: { width: "30%", alignItems: "center" },
+  photoThumb: { width: "100%", aspectRatio: 1, borderRadius: 12, backgroundColor: "#F0F4F8" },
+  photoLabel: { fontSize: 10, fontWeight: "700", color: "#374151", marginTop: 4, textAlign: "center" },
 
   primaryBtn: {
-    width: "100%", borderRadius: 18, paddingVertical: 18, paddingHorizontal: 24,
-    alignItems: "center", marginTop: 24,
-    shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4,
+    borderRadius: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    alignItems: "center",
+    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
-  primaryBtnText: { fontSize: 17, fontWeight: "900", color: "#fff", letterSpacing: 0.2 },
+  primaryBtnText: { fontSize: 17, fontWeight: "900", color: "#fff" },
   primaryBtnSub:  { fontSize: 11, color: "rgba(255,255,255,0.75)", marginTop: 3 },
 
-  secondaryRow: { flexDirection: "row", gap: 12, marginTop: 16, width: "100%" },
+  secondaryRow: { flexDirection: "row", gap: 12 },
   secondaryBtn: {
-    flex: 1, backgroundColor: "#fff", borderRadius: 16, padding: 14, alignItems: "center",
-    borderWidth: 1, borderColor: "#e5e7eb",
-    shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    flex: 1,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E9EDF2",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   secondaryIcon:  { fontSize: 24, marginBottom: 6 },
   secondaryLabel: { fontSize: 11, fontWeight: "700", color: "#374151", textAlign: "center", lineHeight: 16 },
 
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.4)" },
-  modalSheet: {
-    position: "absolute", bottom: 0, left: 0, right: 0,
-    backgroundColor: "#fff", borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 24, paddingBottom: 36, maxHeight: "85%",
+  viewerBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
   },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#e5e7eb", alignSelf: "center", marginBottom: 16 },
-  modalTitle: { fontSize: 18, fontWeight: "900", color: "#111827", marginBottom: 20 },
-  divider:    { height: 1, backgroundColor: "#f3f4f6", marginVertical: 12 },
-  sectionHead:{ fontSize: 11, fontWeight: "800", color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 },
+  viewerCard: { width: "100%", backgroundColor: "#fff", borderRadius: 20, overflow: "hidden" },
+  viewerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+  },
+  viewerTitle:     { fontSize: 15, fontWeight: "800", color: "#111827" },
+  viewerClose:     { width: 32, height: 32, borderRadius: 16, backgroundColor: "#F1F5F9", alignItems: "center", justifyContent: "center" },
+  viewerCloseText: { fontSize: 14, fontWeight: "700", color: "#374151" },
+  viewerImage:     { width: "100%", height: 340 },
 });

@@ -1,4 +1,6 @@
+import { gpsQueueCount } from "@/lib/gps-queue";
 import { projectStore } from "@/lib/store";
+import { queueCount } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -6,11 +8,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Platform,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -26,9 +28,13 @@ type IconName = keyof typeof Ionicons.glyphMap;
 
 export default function ProfileScreen() {
   const [user, setUser] = useState<any>(null);
+  const [pendingCount, setPendingCount] = useState(0);
 
   useEffect(() => {
     tokenStore.getUser().then(setUser);
+    Promise.all([gpsQueueCount(), queueCount()]).then(([gps, sync]) => {
+      setPendingCount(gps + sync);
+    });
   }, []);
 
   const initials = useMemo(() => {
@@ -48,6 +54,12 @@ export default function ProfileScreen() {
       .replace(/\b\w/g, (m) => m.toUpperCase());
   }, [user]);
 
+  const progressValue = useMemo(() => {
+    const total = 20;
+    const normalized = Math.min(pendingCount, total);
+    return normalized / total;
+  }, [pendingCount]);
+
   function handleLogout() {
     Alert.alert("Logout", "Are you sure you want to logout?", [
       { text: "Cancel", style: "cancel" },
@@ -64,33 +76,32 @@ export default function ProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="light-content" />
+    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F7F7F7" />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
       >
-        <View style={styles.hero}>
-          <View style={[styles.heroGlow, styles.heroGlowTop]} />
-          <View style={[styles.heroGlow, styles.heroGlowBottom]} />
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => router.back()}
+            style={styles.headerIconButton}
+          >
+            <Ionicons name="chevron-back" size={22} color="#111111" />
+          </Pressable>
 
-          <View style={styles.heroPill}>
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={14}
-              color="#E7FFF2"
-            />
-            <Text style={styles.heroPillText}>Account Center</Text>
-          </View>
+          <Text style={styles.headerTitle}>Profile</Text>
 
-          <Text style={styles.heroTitle}>Profile</Text>
-          <Text style={styles.heroSubtitle}>
-            Your account details and application information.
-          </Text>
+          <Pressable
+            onPress={() => router.push("/profile/edit" as any)}
+            style={styles.headerIconButton}
+          >
+            <Ionicons name="settings-outline" size={20} color="#111111" />
+          </Pressable>
         </View>
 
-        <View style={styles.profileCard}>
+        <View style={styles.profileBlock}>
           <View style={styles.avatarWrap}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>{initials}</Text>
@@ -98,237 +109,228 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.profileMeta}>
-            <Text style={styles.name} numberOfLines={2}>
+            <Text style={styles.name} numberOfLines={1}>
               {user?.name ?? "Unknown User"}
             </Text>
-
-            <Text style={styles.email} numberOfLines={2}>
+            <Text style={styles.subText} numberOfLines={1}>
               {user?.email ?? "No email available"}
             </Text>
-
-            <View style={styles.roleBadge}>
-              <Text style={styles.roleBadgeText}>{roleLabel}</Text>
-            </View>
+            <Text style={styles.subTextSmall} numberOfLines={1}>
+              {roleLabel}
+            </Text>
           </View>
         </View>
 
-        <Section title="PERSONAL INFORMATION">
-          <InfoRow
-            icon="person-outline"
-            label="Full Name"
-            value={user?.name ?? "—"}
-          />
-          <InfoRow
-            icon="mail-outline"
-            label="Email Address"
-            value={user?.email ?? "—"}
-          />
-          <InfoRow icon="briefcase-outline" label="Role" value={roleLabel} />
-          {user?.subcontractor_id != null ? (
-            <InfoRow
-              icon="id-card-outline"
-              label="Subcontractor ID"
-              value={String(user.subcontractor_id)}
-              isLast
-            />
-          ) : (
-            <InfoRow
-              icon="checkmark-circle-outline"
-              label="Status"
-              value="Active"
-              isLast
-            />
-          )}
-        </Section>
+        <View style={styles.topActionRow}>
+          <MiniStat value={String(pendingCount)} label="Pending" />
+          <MiniStat value={`v${APP_VERSION}`} label="Version" />
+        </View>
 
-        <Section title="APPLICATION">
-          <InfoRow
-            icon="phone-portrait-outline"
-            label="App Name"
-            value="Telcovantage Field App"
+        <View style={styles.kpiCard}>
+          <View style={styles.kpiHeaderRow}>
+            <View>
+              <Text style={styles.kpiLabel}>Upload KPI Progress</Text>
+              <Text style={styles.kpiValue}>
+                {Math.round(progressValue * 100)}%
+              </Text>
+            </View>
+
+            <Pressable
+              style={styles.editProfileButton}
+              onPress={() => router.push("/profile/edit" as any)}
+            >
+              <Ionicons name="create-outline" size={16} color="#111111" />
+              <Text style={styles.editProfileText}>Edit Profile</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${Math.max(progressValue * 100, 8)}%` },
+              ]}
+            />
+          </View>
+
+          <View style={styles.kpiFooterRow}>
+            <Text style={styles.kpiFootText}>
+              Current queue: {pendingCount}
+            </Text>
+            <Text style={styles.kpiFootText}>Target sync: 20</Text>
+          </View>
+        </View>
+
+        <View style={styles.menuList}>
+          <MenuRow
+            icon="cloud-upload-outline"
+            title="Pending Uploads"
+            subtitle="View queued items waiting for sync"
+            rightText={pendingCount > 0 ? String(pendingCount) : undefined}
+            onPress={() => router.push("/teardown/queue-dashboard" as any)}
           />
-          <InfoRow
-            icon="cube-outline"
-            label="Version"
-            value={`v${APP_VERSION}`}
+
+          <MenuRow
+            icon="person-outline"
+            title="Personal Information"
+            subtitle={user?.name ?? "Manage your basic account details"}
+            onPress={() => router.push("/profile/edit" as any)}
+          />
+
+          <MenuRow
+            icon="mail-outline"
+            title="Email Address"
+            subtitle={user?.email ?? "No email available"}
+            onPress={() => {}}
+          />
+
+          <MenuRow
+            icon="briefcase-outline"
+            title="Role"
+            subtitle={roleLabel}
+            onPress={() => {}}
+          />
+
+          <MenuRow
+            icon="shield-checkmark-outline"
+            title="App Version"
+            subtitle={`Telcovantage Field App • v${APP_VERSION}`}
+            onPress={() => {}}
+          />
+
+          <MenuRow
+            icon="settings-outline"
+            title="Settings"
+            subtitle="Edit profile and preferences"
+            onPress={() => router.push("/profile/edit" as any)}
             isLast
           />
-        </Section>
+        </View>
 
-        <TouchableOpacity
-          style={styles.logoutButton}
-          activeOpacity={0.9}
-          onPress={handleLogout}
-        >
-          <Ionicons name="log-out-outline" size={18} color="#C0342B" />
+        <Pressable style={styles.logoutButton} onPress={handleLogout}>
+          <Ionicons name="log-out-outline" size={18} color="#FFFFFF" />
           <Text style={styles.logoutText}>Logout</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.footerText}>
-          Your session and saved account data are securely managed on this
-          device.
-        </Text>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function MiniStat({ value, label }: { value: string; label: string }) {
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      <View style={styles.sectionCard}>{children}</View>
+    <View style={styles.miniStatCard}>
+      <Text style={styles.miniStatValue}>{value}</Text>
+      <Text style={styles.miniStatLabel}>{label}</Text>
     </View>
   );
 }
 
-function InfoRow({
+function MenuRow({
   icon,
-  label,
-  value,
+  title,
+  subtitle,
+  onPress,
+  rightText,
   isLast = false,
 }: {
   icon: IconName;
-  label: string;
-  value: string;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  rightText?: string;
   isLast?: boolean;
 }) {
   return (
-    <View style={[styles.infoRow, isLast && styles.infoRowLast]}>
-      <View style={styles.infoIconBox}>
-        <Ionicons name={icon} size={18} color="#204A3D" />
+    <Pressable
+      onPress={onPress}
+      style={[styles.menuRow, isLast && styles.menuRowLast]}
+    >
+      <View style={styles.menuLeft}>
+        <View style={styles.menuIconWrap}>
+          <Ionicons name={icon} size={20} color="#1B1B1B" />
+        </View>
+
+        <View style={styles.menuTextWrap}>
+          <Text style={styles.menuTitle}>{title}</Text>
+          <Text style={styles.menuSubtitle} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        </View>
       </View>
 
-      <View style={styles.infoTextBox}>
-        <Text style={styles.infoLabel}>{label}</Text>
-        <Text style={styles.infoValue}>{value}</Text>
+      <View style={styles.menuRight}>
+        {rightText ? (
+          <View style={styles.menuBadge}>
+            <Text style={styles.menuBadgeText}>{rightText}</Text>
+          </View>
+        ) : null}
+        <Ionicons name="chevron-forward" size={18} color="#1B1B1B" />
       </View>
-    </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#F5F6F8",
+    backgroundColor: "#F7F7F7",
   },
 
   content: {
-    paddingBottom: 40,
-  },
-
-  hero: {
-    marginHorizontal: 16,
-    marginTop: 6,
     paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 76,
-    borderRadius: 30,
-    backgroundColor: "#13211C",
-    overflow: "hidden",
+    paddingBottom: 120,
   },
 
-  heroGlow: {
-    position: "absolute",
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.05)",
-  },
-
-  heroGlowTop: {
-    width: 180,
-    height: 180,
-    top: -50,
-    right: -30,
-  },
-
-  heroGlowBottom: {
-    width: 120,
-    height: 120,
-    bottom: -26,
-    left: -18,
-  },
-
-  heroPill: {
-    alignSelf: "flex-start",
+  header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    justifyContent: "space-between",
+    paddingTop: 6,
+    paddingBottom: 18,
   },
 
-  heroPillText: {
+  headerTitle: {
     fontFamily: APP_FONT,
-    fontSize: 11,
+    fontSize: 22,
     fontWeight: "600",
-    color: "#E7FFF2",
-    letterSpacing: 0.4,
+    color: "#111111",
+    letterSpacing: -0.4,
   },
 
-  heroTitle: {
-    marginTop: 18,
-    fontFamily: APP_FONT,
-    fontSize: 30,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    letterSpacing: -0.5,
-  },
-
-  heroSubtitle: {
-    marginTop: 8,
-    maxWidth: "88%",
-    fontFamily: APP_FONT,
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "400",
-    color: "rgba(255,255,255,0.72)",
-  },
-
-  profileCard: {
-    marginTop: -44,
-    marginHorizontal: 16,
-    flexDirection: "row",
+  headerIconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
-    padding: 18,
-    borderRadius: 26,
+    justifyContent: "center",
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E8EBEF",
-    shadowColor: "#101828",
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 3,
+    borderColor: "#ECECEC",
+  },
+
+  profileBlock: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 18,
   },
 
   avatarWrap: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: "#DFF4F5",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EEF4F1",
-    borderWidth: 1,
-    borderColor: "#E0E8E4",
+    marginRight: 14,
   },
 
   avatar: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#1E293B",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#204A3D",
   },
 
   avatarText: {
@@ -336,133 +338,227 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "700",
     color: "#FFFFFF",
-    letterSpacing: 0.3,
   },
 
   profileMeta: {
     flex: 1,
-    marginLeft: 14,
   },
 
   name: {
     fontFamily: APP_FONT,
     fontSize: 22,
     fontWeight: "700",
-    color: "#111827",
-    letterSpacing: -0.3,
+    color: "#131313",
+    letterSpacing: -0.4,
   },
 
-  email: {
+  subText: {
+    marginTop: 3,
+    fontFamily: APP_FONT,
+    fontSize: 15,
+    color: "#666666",
+  },
+
+  subTextSmall: {
+    marginTop: 2,
+    fontFamily: APP_FONT,
+    fontSize: 13,
+    color: "#8B8B8B",
+  },
+
+  topActionRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 14,
+  },
+
+  miniStatCard: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+  },
+
+  miniStatValue: {
+    fontFamily: APP_FONT,
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111111",
+  },
+
+  miniStatLabel: {
     marginTop: 4,
     fontFamily: APP_FONT,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: "400",
-    color: "#7A8599",
-  },
-
-  roleBadge: {
-    alignSelf: "flex-start",
-    marginTop: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "#F1F7F4",
-    borderWidth: 1,
-    borderColor: "#DDE9E3",
-  },
-
-  roleBadgeText: {
-    fontFamily: APP_FONT,
     fontSize: 12,
-    fontWeight: "600",
-    color: "#204A3D",
+    color: "#7A7A7A",
   },
 
-  section: {
-    marginTop: 20,
-    marginHorizontal: 16,
-  },
-
-  sectionTitle: {
-    marginBottom: 10,
-    paddingHorizontal: 2,
-    fontFamily: APP_FONT,
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#98A2B3",
-    letterSpacing: 1.1,
-  },
-
-  sectionCard: {
+  kpiCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 24,
+    padding: 18,
     borderWidth: 1,
-    borderColor: "#E8EBEF",
-    overflow: "hidden",
-    shadowColor: "#101828",
-    shadowOpacity: 0.03,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 2,
+    borderColor: "#EEEEEE",
+    marginBottom: 18,
   },
 
-  infoRow: {
+  kpiHeaderRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    paddingHorizontal: 16,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEF1F4",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+    gap: 10,
   },
 
-  infoRowLast: {
+  kpiLabel: {
+    fontFamily: APP_FONT,
+    fontSize: 14,
+    color: "#777777",
+  },
+
+  kpiValue: {
+    marginTop: 4,
+    fontFamily: APP_FONT,
+    fontSize: 30,
+    fontWeight: "700",
+    color: "#111111",
+    letterSpacing: -0.8,
+  },
+
+  editProfileButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 18,
+    backgroundColor: "#F5F5F5",
+  },
+
+  editProfileText: {
+    fontFamily: APP_FONT,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#111111",
+  },
+
+  progressTrack: {
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: "#EFEFEF",
+    overflow: "hidden",
+  },
+
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#9ED9B3",
+  },
+
+  kpiFooterRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+
+  kpiFootText: {
+    fontFamily: APP_FONT,
+    fontSize: 12,
+    color: "#7A7A7A",
+  },
+
+  menuList: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+    overflow: "hidden",
+  },
+
+  menuRow: {
+    minHeight: 78,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "#EFEFEF",
+  },
+
+  menuRowLast: {
     borderBottomWidth: 0,
   },
 
-  infoIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  menuLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 12,
+  },
+
+  menuIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F4F7F6",
     marginRight: 12,
   },
 
-  infoTextBox: {
+  menuTextWrap: {
     flex: 1,
   },
 
-  infoLabel: {
-    marginBottom: 5,
+  menuTitle: {
     fontFamily: APP_FONT,
-    fontSize: 11,
+    fontSize: 16,
     fontWeight: "600",
-    color: "#98A2B3",
-    letterSpacing: 0.7,
-    textTransform: "uppercase",
+    color: "#111111",
   },
 
-  infoValue: {
+  menuSubtitle: {
+    marginTop: 3,
     fontFamily: APP_FONT,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: "500",
-    color: "#1F2937",
+    fontSize: 14,
+    color: "#7C7C7C",
+  },
+
+  menuRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  menuBadge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 7,
+  },
+
+  menuBadgeText: {
+    fontFamily: APP_FONT,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 
   logoutButton: {
-    marginHorizontal: 16,
-    marginTop: 24,
+    marginTop: 18,
     height: 56,
-    borderRadius: 18,
-    backgroundColor: "#FFF6F5",
-    borderWidth: 1,
-    borderColor: "#F5D5D1",
-    flexDirection: "row",
+    borderRadius: 28,
+    backgroundColor: "#0B132B",
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
     gap: 8,
   },
 
@@ -470,17 +566,18 @@ const styles = StyleSheet.create({
     fontFamily: APP_FONT,
     fontSize: 15,
     fontWeight: "700",
-    color: "#C0342B",
-  },
-
-  footerText: {
-    marginTop: 14,
-    marginHorizontal: 24,
-    textAlign: "center",
-    fontFamily: APP_FONT,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "400",
-    color: "#98A2B3",
+    color: "#FFFFFF",
   },
 });
+
+// Pending Upload Modal note:
+// Remove the old header/title bar completely.
+// Use only a floating circle back button like this:
+//
+// <View style={{ paddingHorizontal: 20, paddingTop: 8, marginBottom: 8 }}>
+//   <Pressable onPress={onClose} style={styles.headerIconButton}>
+//     <Ionicons name="chevron-back" size={22} color="#111111" />
+//   </Pressable>
+// </View>
+//
+// Then continue directly with the modal content list/card layout.

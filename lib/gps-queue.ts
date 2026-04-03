@@ -76,3 +76,12 @@ export async function gpsQueueGet(pole_id: string): Promise<{ lat: number; lng: 
   const entry = entries.find((e) => e.pole_id === pole_id);
   return entry ? { lat: entry.lat, lng: entry.lng } : null;
 }
+
+export async function gpsQueueReadAll(): Promise<GpsEntry[]> {
+  return readQueue();
+}
+
+export async function gpsQueueRemove(pole_id: string): Promise<void> {
+  const entries = await readQueue();
+  await writeQueue(entries.filter((e) => e.pole_id !== pole_id));
+}

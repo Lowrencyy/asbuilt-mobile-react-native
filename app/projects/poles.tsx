@@ -46,12 +46,16 @@ type Span = {
     pole_code: string;
     pole_name: string | null;
     status: string;
+    map_latitude: string | null;
+    map_longitude: string | null;
   };
   to_pole: {
     id: number;
     pole_code: string;
     pole_name: string | null;
     status: string;
+    map_latitude: string | null;
+    map_longitude: string | null;
   };
 };
 
@@ -271,12 +275,22 @@ html,body{
 </html>`;
   }
 
-  const gpsMap: Record<string, { lat: number; lng: number }> = {};
+  // Key by pole ID (unique) — pole_code is NOT unique (multiple NPT poles share codes)
+  const gpsMap: Record<number, { lat: number; lng: number }> = {};
   valid.forEach((p) => {
-    gpsMap[p.pole_code] = {
+    gpsMap[p.id] = {
       lat: parseFloat(p.map_latitude!),
       lng: parseFloat(p.map_longitude!),
     };
+  });
+  // Also seed from span endpoint data — catches poles from other nodes
+  spans.forEach((sp) => {
+    if (sp.from_pole?.id && sp.from_pole.map_latitude && sp.from_pole.map_longitude && !gpsMap[sp.from_pole.id]) {
+      gpsMap[sp.from_pole.id] = { lat: parseFloat(sp.from_pole.map_latitude), lng: parseFloat(sp.from_pole.map_longitude) };
+    }
+    if (sp.to_pole?.id && sp.to_pole.map_latitude && sp.to_pole.map_longitude && !gpsMap[sp.to_pole.id]) {
+      gpsMap[sp.to_pole.id] = { lat: parseFloat(sp.to_pole.map_latitude), lng: parseFloat(sp.to_pole.map_longitude) };
+    }
   });
 
   function normSt(s: string) {
@@ -318,26 +332,26 @@ html,body{
       .replace(/"/g, "&quot;");
   }
 
-  const poleSpanMap: Record<string, { total: number; completed: number }> = {};
+  const poleSpanMap: Record<number, { total: number; completed: number }> = {};
   spans.forEach((sp) => {
     const spDone = ["completed", "done", "finished"].includes(
       (sp.status || "").trim().toLowerCase(),
     );
 
-    [sp.from_pole?.pole_code, sp.to_pole?.pole_code].forEach((code) => {
-      if (!code) return;
-      if (!poleSpanMap[code]) {
-        poleSpanMap[code] = { total: 0, completed: 0 };
+    [sp.from_pole?.id, sp.to_pole?.id].forEach((id) => {
+      if (!id) return;
+      if (!poleSpanMap[id]) {
+        poleSpanMap[id] = { total: 0, completed: 0 };
       }
-      poleSpanMap[code].total += 1;
-      if (spDone) poleSpanMap[code].completed += 1;
+      poleSpanMap[id].total += 1;
+      if (spDone) poleSpanMap[id].completed += 1;
     });
   });
 
   const spanJs = spans
     .map((sp) => {
-      const fg = gpsMap[sp.from_pole?.pole_code];
-      const tg = gpsMap[sp.to_pole?.pole_code];
+      const fg = gpsMap[sp.from_pole?.id];
+      const tg = gpsMap[sp.to_pole?.id];
       if (!fg || !tg) return "";
 
       const st = normSt(sp.status);
@@ -466,7 +480,7 @@ L.marker([${ml},${mg}],{
       const lat = parseFloat(p.map_latitude!);
       const lng = parseFloat(p.map_longitude!);
 
-      const spanInfo = poleSpanMap[p.pole_code];
+      const spanInfo = poleSpanMap[p.id];
       const allSpansDone =
         !!spanInfo &&
         spanInfo.total > 0 &&
@@ -964,7 +978,7 @@ export default function PolesScreen() {
     loadPoles();
   }, [node_id]);
 
-  useEffect(() => {
+  function loadSpans() {
     if (!node_id) return;
     api
       .get(`/nodes/${node_id}/spans`)
@@ -977,6 +991,10 @@ export default function PolesScreen() {
         setSpans(raw);
       })
       .catch(() => {});
+  }
+
+  useEffect(() => {
+    loadSpans();
   }, [node_id]);
 
   const filteredPoles = useMemo(() => {
@@ -1191,7 +1209,7 @@ export default function PolesScreen() {
                     <View style={styles.heroButtonRow}>
                       <TouchableOpacity
                         activeOpacity={0.9}
-                        onPress={() => setShowVicinityMap(true)}
+                        onPress={() => { loadPoles(true); loadSpans(); setShowVicinityMap(true); }}
                         style={styles.vicinityBtn}
                       >
                         <Text style={styles.vicinityBtnText}>

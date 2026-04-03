@@ -1,7 +1,8 @@
 import { tokenStore } from "@/lib/token";
 
 // ngrok URL changes each session — update this when you restart ngrok
-const BASE_URL = "https://disguisedly-enarthrodial-kristi.ngrok-free.dev/api/v1";
+const BASE_URL =
+  "https://disguisedly-enarthrodial-kristi.ngrok-free.dev/api/v1";
 
 const ASSET_BASE = BASE_URL.replace("/v1", "");
 
@@ -14,7 +15,10 @@ export function assetUrl(path: string | null | undefined): string | null {
 // Kept for login.tsx compatibility — tokenStore is the source of truth
 export function setAuthToken(_token: string) {}
 
-async function buildHeaders(isFormData = false, extra?: Record<string, string>) {
+async function buildHeaders(
+  isFormData = false,
+  extra?: Record<string, string>,
+) {
   const token = await tokenStore.get();
   return {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
