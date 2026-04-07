@@ -347,6 +347,31 @@ function PhotoTile({
   );
 }
 
+const BLUR_DETECT_HTML = `<!DOCTYPE html><html><body style="margin:0;padding:0"><canvas id="c" style="display:none"></canvas><script>
+function run(b64){
+  var img=new Image();
+  img.onload=function(){
+    var W=Math.min(img.width,200),H=Math.min(img.height,200);
+    var c=document.getElementById('c');c.width=W;c.height=H;
+    var ctx=c.getContext('2d');ctx.drawImage(img,0,0,W,H);
+    var d=ctx.getImageData(0,0,W,H).data;
+    var g=new Float32Array(W*H);
+    for(var i=0;i<W*H;i++)g[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+    var s=0,n=0;
+    for(var y=1;y<H-1;y++){for(var x=1;x<W-1;x++){
+      var v=-4*g[y*W+x]+g[(y-1)*W+x]+g[(y+1)*W+x]+g[y*W+x-1]+g[y*W+x+1];
+      s+=v*v;n++;
+    }}
+    window.ReactNativeWebView.postMessage(JSON.stringify({v:n>0?s/n:999}));
+  };
+  img.onerror=function(){window.ReactNativeWebView.postMessage(JSON.stringify({v:999}));};
+  img.src='data:image/jpeg;base64,'+b64;
+}
+document.addEventListener('message',function(e){run(e.data);});
+window.addEventListener('message',function(e){run(e.data);});
+window.ReactNativeWebView.postMessage(JSON.stringify({ready:1}));
+<\/script></body></html>`;
+
 export default function DestinationPoleScreen() {
   const params = useLocalSearchParams<{
     pole_code: string;
@@ -409,6 +434,8 @@ export default function DestinationPoleScreen() {
   const timerStartRef = useRef(Date.now());
   const toPoleGpsRef = useRef<GpsData | null>(null);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
+  const blurCheckRef = useRef<WebView>(null);
+  const blurResolverRef = useRef<((r: "ok" | "poor") => void) | null>(null);
 
   const hasGps = !!capturedGps;
 
@@ -625,12 +652,33 @@ export default function DestinationPoleScreen() {
     };
   }, []);
 
+  function handleBlurMessage(event: { nativeEvent: { data: string } }) {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.ready || !blurResolverRef.current) return;
+      const isBlurry = typeof data.v === "number" && data.v < 80;
+      blurResolverRef.current(isBlurry ? "poor" : "ok");
+      blurResolverRef.current = null;
+    } catch {}
+  }
+
   async function checkPhotoQuality(fileUri: string): Promise<"ok" | "poor"> {
     try {
-      const info = await FileSystem.getInfoAsync(fileUri);
-      if (!info.exists) return "ok";
-      const bytes = (info as any).size ?? 0;
-      return bytes < 200 * 1024 ? "poor" : "ok";
+      const b64 = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: "base64" as any,
+      });
+      return new Promise<"ok" | "poor">((resolve) => {
+        blurResolverRef.current = resolve;
+        blurCheckRef.current?.injectJavaScript(
+          `(function(){document.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(b64)}}));})();true;`
+        );
+        setTimeout(() => {
+          if (blurResolverRef.current) {
+            blurResolverRef.current("ok");
+            blurResolverRef.current = null;
+          }
+        }, 8000);
+      });
     } catch {
       return "ok";
     }
@@ -676,10 +724,9 @@ export default function DestinationPoleScreen() {
   async function compressPhoto(uri: string): Promise<string> {
     try {
       const ctx = ImageManipulator.manipulate(uri);
-      ctx.resize({ width: 900 });
       const img = await ctx.renderAsync();
       const result = await img.saveAsync({
-        compress: 0.45,
+        compress: 0.88,
         format: SaveFormat.JPEG,
       });
       return result.uri;
@@ -1102,37 +1149,23 @@ export default function DestinationPoleScreen() {
           visible={qualityAlertOpen}
           transparent
           animationType="fade"
-          onRequestClose={() => setQualityAlertOpen(false)}
+          onRequestClose={() => {}}
         >
           <View style={styles.modalBackdrop}>
-            <Pressable
-              style={StyleSheet.absoluteFill}
-              onPress={() => setQualityAlertOpen(false)}
-            />
             <View style={styles.qualityAlertCard}>
               <View style={styles.qualityAlertIconWrap}>
                 <Text style={styles.qualityAlertIcon}>⚠️</Text>
               </View>
 
-              <Text style={styles.qualityAlertTitle}>Low Quality Detected</Text>
+              <Text style={styles.qualityAlertTitle}>Blurry Photo Detected</Text>
 
               <Text style={styles.qualityAlertBody}>
                 This photo appears to be{" "}
-                <Text style={styles.qualityAlertBold}>too dark or blurry</Text>.
-                {"\n"}Please retake for a clearer image.
+                <Text style={styles.qualityAlertBold}>too blurry</Text>.
+                {"\n"}Please retake for a clearer image of the pole tag.
               </Text>
 
               <View style={styles.qualityAlertActions}>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.qualityKeepBtn,
-                    pressed && styles.pressedDown,
-                  ]}
-                  onPress={() => setQualityAlertOpen(false)}
-                >
-                  <Text style={styles.qualityKeepBtnText}>Keep Anyway</Text>
-                </Pressable>
-
                 <Pressable
                   style={({ pressed }) => [
                     styles.qualityRetakeBtn,
@@ -1150,6 +1183,17 @@ export default function DestinationPoleScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* Hidden WebView for blur detection */}
+        <WebView
+          ref={blurCheckRef}
+          style={{ position: "absolute", width: 0, height: 0, opacity: 0 }}
+          source={{ html: BLUR_DETECT_HTML }}
+          onMessage={handleBlurMessage}
+          javaScriptEnabled
+          domStorageEnabled
+          originWhitelist={["*"]}
+        />
       </SafeAreaView>
     </>
   );

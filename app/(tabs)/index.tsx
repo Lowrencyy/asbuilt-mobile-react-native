@@ -1826,7 +1826,7 @@ export default function Index() {
   useEffect(() => {
     (async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
+        const { status } = await Location.getForegroundPermissionsAsync();
         if (status !== "granted") return;
 
         const last = await Location.getLastKnownPositionAsync({
@@ -1899,15 +1899,22 @@ export default function Index() {
       });
     }
 
-    api
-      .get("/projects")
-      .then(({ data }) => {
-        const list: Project[] = Array.isArray(data) ? data : [];
-        cacheSet("projects_list", list);
-        projectStore.set(list);
-        setProjects(list);
-      })
-      .catch(() => {});
+    const PRIVILEGED = ["admin", "pm", "executive"];
+
+    tokenStore.getUser().then((u: any) => {
+      const role = (u?.role ?? "").toLowerCase();
+      const endpoint = PRIVILEGED.includes(role) ? "/projects/all" : "/projects";
+
+      api
+        .get(endpoint)
+        .then(({ data }) => {
+          const list: Project[] = Array.isArray(data) ? data : [];
+          cacheSet("projects_list", list);
+          projectStore.set(list);
+          setProjects(list);
+        })
+        .catch(() => {});
+    });
   }, []);
 
   const titleTranslateY = translateY.interpolate({

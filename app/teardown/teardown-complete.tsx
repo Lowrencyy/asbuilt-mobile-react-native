@@ -63,7 +63,7 @@ export default function TeardownCompleteScreen() {
   const params = useLocalSearchParams<Record<string, string>>();
 
   const {
-    from_pole_code, from_pole_name,
+    from_pole_code,
     to_pole_id, to_pole_code, to_pole_name,
     node_id, project_id, project_name,
     accent, span_id,
@@ -90,6 +90,7 @@ export default function TeardownCompleteScreen() {
     : new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila", dateStyle: "medium", timeStyle: "short" });
 
   const [photos, setPhotos] = useState<PhotoFile[]>([]);
+  const [cablePhotoUri, setCablePhotoUri] = useState<string | null>(null);
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [viewerLabel, setViewerLabel] = useState("");
 
@@ -99,6 +100,7 @@ export default function TeardownCompleteScreen() {
 
   async function loadPhotos() {
     const toCode = to_code_sanitized || sanitize(to_pole_code);
+    const fromCode = sanitize(from_pole_code);
     const poleDir = pole_draft_dir || "";
     const tdDir   = teardown_draft_dir || "";
 
@@ -118,6 +120,11 @@ export default function TeardownCompleteScreen() {
       if (info.exists) found.push({ uri: (info as any).uri, label });
     }
     setPhotos(found);
+
+    if (tdDir && fromCode) {
+      const cableInfo = await FileSystem.getInfoAsync(tdDir + `${fromCode}_cable.jpg`).catch(() => ({ exists: false }));
+      if (cableInfo.exists) setCablePhotoUri((cableInfo as any).uri);
+    }
   }
 
   function goToNext() {
@@ -215,25 +222,32 @@ export default function TeardownCompleteScreen() {
         {/* ── Cable summary ── */}
         <View style={styles.card}>
           <Text style={styles.cardLabel}>CABLE</Text>
-          <View style={styles.infoRow}>
-            <View style={styles.infoCell}>
-              <Text style={styles.infoCellLabel}>Status</Text>
-              <Text style={[styles.infoCellValue, { color: cable_collected === "1" ? "#16A34A" : "#DC2626" }]}>
-                {cable_collected === "1" ? "All Collected" : "Partial"}
-              </Text>
+          <View style={styles.cableRow}>
+            {cablePhotoUri ? (
+              <Pressable onPress={() => { setViewerUri(cablePhotoUri); setViewerLabel("Cable"); }} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
+                <ExpoImage source={{ uri: cablePhotoUri }} style={styles.cableThumb} contentFit="cover" />
+              </Pressable>
+            ) : null}
+            <View style={styles.cableStats}>
+              <View style={styles.infoCell}>
+                <Text style={styles.infoCellLabel}>Status</Text>
+                <Text style={[styles.infoCellValue, { color: cable_collected === "1" ? "#16A34A" : "#DC2626" }]}>
+                  {cable_collected === "1" ? "All" : "Partial"}
+                </Text>
+              </View>
+              {recovered_cable ? (
+                <View style={styles.infoCell}>
+                  <Text style={styles.infoCellLabel}>Recovered</Text>
+                  <Text style={styles.infoCellValue}>{recovered_cable}m</Text>
+                </View>
+              ) : null}
+              {expected_cable ? (
+                <View style={styles.infoCell}>
+                  <Text style={styles.infoCellLabel}>Expected</Text>
+                  <Text style={styles.infoCellValue}>{expected_cable}m</Text>
+                </View>
+              ) : null}
             </View>
-            {recovered_cable ? (
-              <View style={styles.infoCell}>
-                <Text style={styles.infoCellLabel}>Recovered</Text>
-                <Text style={styles.infoCellValue}>{recovered_cable}m</Text>
-              </View>
-            ) : null}
-            {expected_cable ? (
-              <View style={styles.infoCell}>
-                <Text style={styles.infoCellLabel}>Expected</Text>
-                <Text style={styles.infoCellValue}>{expected_cable}m</Text>
-              </View>
-            ) : null}
           </View>
           {cable_reason ? (
             <Text style={styles.cableReason}>Reason: {cable_reason}</Text>
@@ -246,7 +260,7 @@ export default function TeardownCompleteScreen() {
             <Text style={styles.cardLabel}>COMPONENTS COLLECTED</Text>
             <View style={styles.compGrid}>
               {components.map((c) => (
-                <View key={c.label} style={[styles.compChip, { borderColor: `${accentColor}30`, backgroundColor: `${accentColor}08` }]}>
+                <View key={c.label} style={styles.compCell}>
                   <Text style={[styles.compCount, { color: accentColor }]}>{c.count}</Text>
                   <Text style={styles.compLabel}>{c.label}</Text>
                 </View>
@@ -387,13 +401,17 @@ const styles = StyleSheet.create({
   nodeText: { fontSize: 12, color: "#6B7280", fontWeight: "600" },
 
   infoRow: { flexDirection: "row", gap: 12 },
-  infoCell: { flex: 1, backgroundColor: "#F8FAFC", borderRadius: 12, padding: 12 },
-  infoCellLabel: { fontSize: 10, fontWeight: "700", color: "#9CA3AF", marginBottom: 4, textTransform: "uppercase" },
-  infoCellValue: { fontSize: 16, fontWeight: "900", color: "#111827" },
+  infoCell: { flex: 1 },
+  infoCellLabel: { fontSize: 9, fontWeight: "700", color: "#9CA3AF", marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.5 },
+  infoCellValue: { fontSize: 13, fontWeight: "900", color: "#111827" },
 
+  cableRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  cableThumb: { width: 54, height: 44, borderRadius: 8, backgroundColor: "#F0F4F8" },
+  cableStats: { flex: 1, flexDirection: "row", gap: 8 },
   cableReason: { fontSize: 12, color: "#6B7280", marginTop: 10, fontStyle: "italic" },
 
-  compGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  compGrid: { flexDirection: "row", flexWrap: "wrap" },
+  compCell: { width: "33.33%", paddingVertical: 8, paddingRight: 8 },
   compChip: {
     borderRadius: 14,
     borderWidth: 1,

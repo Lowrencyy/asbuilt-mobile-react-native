@@ -719,9 +719,9 @@ export default function TeardownComponentsScreen() {
       return collectedAll !== null && recoveredCable.trim() !== "";
     }
 
+    const fromPhotosOk = polePreSubmitted || (!!photos.from_before && !!photos.from_tag);
     return (
-      !!photos.from_before &&
-      !!photos.from_tag &&
+      fromPhotosOk &&
       !!photos.to_before &&
       !!photos.to_after &&
       !!photos.to_tag &&
@@ -847,36 +847,22 @@ export default function TeardownComponentsScreen() {
     return fields;
   }
 
-  function buildPhotoPaths(skipFromPolePhotos = false): Record<string, string> {
+  function buildPhotoPaths(): Record<string, string> {
     const paths: Record<string, string> = {};
-    if (!skipFromPolePhotos && photos.from_before) {
-      paths.from_before = photos.from_before.uri;
-    }
-    if (photos.from_after) {
-      paths.from_after = photos.from_after.uri;
-    }
-    if (!skipFromPolePhotos && photos.from_tag) {
-      paths.from_tag = photos.from_tag.uri;
-    }
-    if (photos.to_before) {
-      paths.to_before = photos.to_before.uri;
-    }
-    if (photos.to_after) {
-      paths.to_after = photos.to_after.uri;
-    }
-    if (photos.to_tag) {
-      paths.to_tag = photos.to_tag.uri;
-    }
-    if (cablePhoto) {
-      paths.before_span = cablePhoto.uri;
-    }
+    if (photos.from_before) paths.from_before = photos.from_before.uri;
+    if (photos.from_after) paths.from_after = photos.from_after.uri;
+    if (photos.from_tag) paths.from_tag = photos.from_tag.uri;
+    if (photos.to_before) paths.to_before = photos.to_before.uri;
+    if (photos.to_after) paths.to_after = photos.to_after.uri;
+    if (photos.to_tag) paths.to_tag = photos.to_tag.uri;
+    if (cablePhoto) paths.before_span = cablePhoto.uri;
     return paths;
   }
 
   async function handleSubmit() {
     const missing: string[] = [];
-    if (!photos.from_before) missing.push("From Pole — Before photo");
-    if (!photos.from_tag) missing.push("From Pole — Pole Tag photo");
+    if (!polePreSubmitted && !photos.from_before) missing.push("From Pole — Before photo");
+    if (!polePreSubmitted && !photos.from_tag) missing.push("From Pole — Pole Tag photo");
     if (!photos.to_before) missing.push("Destination Pole — Before photo");
     if (!photos.to_after) missing.push("Destination Pole — After photo");
     if (!photos.to_tag) missing.push("Destination Pole — Pole Tag photo");
@@ -899,14 +885,8 @@ export default function TeardownComponentsScreen() {
     let photoPaths: Record<string, string>;
 
     try {
-      const poleAlreadySubmitted = params.from_pole_id
-        ? !!(await cacheGet<boolean>(
-            `pole_submitted_${params.from_pole_id}`,
-          ).catch(() => false))
-        : false;
-
       fields = await buildFields();
-      photoPaths = buildPhotoPaths(poleAlreadySubmitted);
+      photoPaths = buildPhotoPaths();
     } catch {
       Alert.alert("Error", "Could not prepare submission. Please try again.");
       setSubmitting(false);
@@ -1032,8 +1012,8 @@ export default function TeardownComponentsScreen() {
     collectedPsh;
 
   const requiredPhotosDone = [
-    !!photos.from_before,
-    !!photos.from_tag,
+    polePreSubmitted || !!photos.from_before,
+    polePreSubmitted || !!photos.from_tag,
     !!photos.to_before,
     !!photos.to_after,
     !!photos.to_tag,
@@ -1982,70 +1962,24 @@ export default function TeardownComponentsScreen() {
                 </Text>
                 <View style={styles.summaryCompGrid}>
                   {[
-                    {
-                      label: "Node",
-                      value: collectedNode,
-                      expected: Number(params.expected_node) || 0,
-                    },
-                    {
-                      label: "Amplifier",
-                      value: collectedAmp,
-                      expected: Number(params.expected_amplifier) || 0,
-                    },
-                    {
-                      label: "Extender",
-                      value: collectedExt,
-                      expected: Number(params.expected_extender) || 0,
-                    },
-                    {
-                      label: "TSC",
-                      value: collectedTsc,
-                      expected: Number(params.expected_tsc) || 0,
-                    },
-                    {
-                      label: "Power Supply",
-                      value: collectedPs,
-                      expected: Number(params.expected_powersupply) || 0,
-                    },
-                    {
-                      label: "PS Housing",
-                      value: collectedPsh,
-                      expected:
-                        Number(params.expected_powersupply_housing) || 0,
-                    },
-                  ].map(({ label, value, expected }) => (
-                    <View
-                      key={label}
-                      style={[
-                        styles.summaryCompChip,
-                        {
-                          borderColor: `${accentColor}25`,
-                          backgroundColor:
-                            value === expected && expected > 0
-                              ? `${accentColor}10`
-                              : "#F8FAFC",
-                        },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.summaryCompCount,
-                          {
-                            color:
-                              value === expected && expected > 0
-                                ? accentColor
-                                : "#111827",
-                          },
-                        ]}
-                      >
-                        {value}
-                      </Text>
-                      <Text style={styles.summaryCompLabel}>{label}</Text>
-                      <Text style={styles.summaryCompExpected}>
-                        exp. {expected}
-                      </Text>
-                    </View>
-                  ))}
+                    { label: "Node", value: collectedNode, expected: Number(params.expected_node) || 0 },
+                    { label: "Amplifier", value: collectedAmp, expected: Number(params.expected_amplifier) || 0 },
+                    { label: "Extender", value: collectedExt, expected: Number(params.expected_extender) || 0 },
+                    { label: "TSC", value: collectedTsc, expected: Number(params.expected_tsc) || 0 },
+                    { label: "Pwr Supply", value: collectedPs, expected: Number(params.expected_powersupply) || 0 },
+                    { label: "PS Housing", value: collectedPsh, expected: Number(params.expected_powersupply_housing) || 0 },
+                  ].map(({ label, value, expected }) => {
+                    const matched = value === expected && expected > 0;
+                    return (
+                      <View key={label} style={styles.summaryCompCell}>
+                        <Text style={[styles.summaryCompCount, { color: matched ? accentColor : "#111827" }]}>
+                          {value}
+                        </Text>
+                        <Text style={styles.summaryCompLabel}>{label}</Text>
+                        <Text style={styles.summaryCompExpected}>/{expected}</Text>
+                      </View>
+                    );
+                  })}
                 </View>
               </View>
 
@@ -2053,32 +1987,33 @@ export default function TeardownComponentsScreen() {
               <View style={styles.summaryCard}>
                 <Text style={styles.summaryCardLabel}>CABLE</Text>
                 <View style={styles.summaryCableRow}>
-                  <View style={styles.summaryCableCell}>
-                    <Text style={styles.summaryCableCellLabel}>Status</Text>
-                    <Text
-                      style={[
-                        styles.summaryCableCellValue,
-                        { color: collectedAll ? "#16A34A" : "#DC2626" },
-                      ]}
+                  {cablePhoto ? (
+                    <Pressable
+                      onPress={() => openViewer("Cable", cablePhoto)}
+                      style={({ pressed }) => [pressed && styles.pressedDown]}
                     >
-                      {collectedAll === null
-                        ? "—"
-                        : collectedAll
-                          ? "All Collected"
-                          : "Partial"}
-                    </Text>
-                  </View>
-                  <View style={styles.summaryCableCell}>
-                    <Text style={styles.summaryCableCellLabel}>Recovered</Text>
-                    <Text style={styles.summaryCableCellValue}>
-                      {recoveredCable || "—"}m
-                    </Text>
-                  </View>
-                  <View style={styles.summaryCableCell}>
-                    <Text style={styles.summaryCableCellLabel}>Expected</Text>
-                    <Text style={styles.summaryCableCellValue}>
-                      {adjExpected}m
-                    </Text>
+                      <ExpoImage
+                        source={{ uri: cablePhoto.uri }}
+                        style={styles.summaryCableThumb}
+                        contentFit="cover"
+                      />
+                    </Pressable>
+                  ) : null}
+                  <View style={styles.summaryCableStats}>
+                    <View style={styles.summaryCableCell}>
+                      <Text style={styles.summaryCableCellLabel}>Status</Text>
+                      <Text style={[styles.summaryCableCellValue, { color: collectedAll ? "#16A34A" : "#DC2626" }]}>
+                        {collectedAll === null ? "—" : collectedAll ? "All" : "Partial"}
+                      </Text>
+                    </View>
+                    <View style={styles.summaryCableCell}>
+                      <Text style={styles.summaryCableCellLabel}>Recovered</Text>
+                      <Text style={styles.summaryCableCellValue}>{recoveredCable || "—"}m</Text>
+                    </View>
+                    <View style={styles.summaryCableCell}>
+                      <Text style={styles.summaryCableCellLabel}>Expected</Text>
+                      <Text style={styles.summaryCableCellValue}>{adjExpected}m</Text>
+                    </View>
                   </View>
                 </View>
               </View>
@@ -3354,47 +3289,52 @@ const styles = StyleSheet.create({
   summaryCompGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
   },
 
-  summaryCompChip: {
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    alignItems: "center",
-    minWidth: 88,
+  summaryCompCell: {
+    width: "33.33%",
+    paddingVertical: 8,
+    paddingRight: 8,
   },
 
   summaryCompCount: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: "900",
   },
 
   summaryCompLabel: {
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 9,
+    fontWeight: "600",
     color: "#6B7280",
-    marginTop: 2,
-    textAlign: "center",
+    marginTop: 1,
   },
 
   summaryCompExpected: {
-    fontSize: 9,
+    fontSize: 8,
     color: "#9CA3AF",
-    marginTop: 1,
   },
 
   summaryCableRow: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 10,
+  },
+
+  summaryCableThumb: {
+    width: 54,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: "#F0F4F8",
+  },
+
+  summaryCableStats: {
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
   },
 
   summaryCableCell: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
-    borderRadius: 12,
-    padding: 12,
   },
 
   summaryCableCellLabel: {
@@ -3403,11 +3343,11 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     textTransform: "uppercase",
     letterSpacing: 0.5,
-    marginBottom: 4,
+    marginBottom: 2,
   },
 
   summaryCableCellValue: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "900",
     color: "#111827",
   },

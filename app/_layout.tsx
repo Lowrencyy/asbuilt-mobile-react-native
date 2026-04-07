@@ -40,7 +40,7 @@ export default function RootLayout() {
     };
 
     check();
-    intervalRef.current = setInterval(check, 30000);
+    intervalRef.current = setInterval(check, 5 * 60 * 1000); // every 5 minutes
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);

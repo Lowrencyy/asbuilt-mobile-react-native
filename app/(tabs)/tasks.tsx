@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   FlatList,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -50,6 +51,29 @@ type ProjectGroup = {
   project_id: number;
   project_name: string;
   nodes: NodeGroup[];
+};
+
+const COLORS = {
+  bg: "#F7F8FA",
+  bgSoft: "#FFFFFF",
+  surface: "#1E2329",
+  surface2: "#252B33",
+  surface3: "#2C333D",
+  primary: "#0B7A5A",
+  secondary: "#36B38A",
+  accentBlue: "#3B82F6",
+  text: "#F8FAFC",
+  textSoft: "rgba(248,250,252,0.78)",
+  textMuted: "rgba(248,250,252,0.54)",
+  ink: "#111827",
+  inkSoft: "#667085",
+  borderLight: "#E7ECF2",
+  borderDark: "rgba(255,255,255,0.07)",
+  glowGreen: "rgba(11,122,90,0.10)",
+  glowWhite: "rgba(255,255,255,0.04)",
+  success: "#36B38A",
+  warning: "#F59E0B",
+  danger: "#E76F51",
 };
 
 const n2 = (v: unknown) => (v == null || v === "" ? 0 : Number(v) || 0);
@@ -104,31 +128,46 @@ function groupLogs(logs: TeardownLog[]): ProjectGroup[] {
 
 const PROJECT_ACCENTS = [
   "#0B7A5A",
-  "#0D47C9",
-  "#7C3AED",
-  "#C2410C",
+  "#36B38A",
+  "#3B82F6",
+  "#14B8A6",
+  "#10B981",
   "#0F766E",
-  "#BE123C",
 ];
 
-function SummaryCard({
+function MetricCard({
   label,
   value,
-  color,
+  sublabel,
   icon,
+  accent,
 }: {
   label: string;
   value: string | number;
-  color: string;
+  sublabel?: string;
   icon: keyof typeof Ionicons.glyphMap;
+  accent: string;
 }) {
   return (
-    <View style={styles.summaryCard}>
-      <View style={[styles.summaryIcon, { backgroundColor: `${color}15` }]}>
-        <Ionicons name={icon} size={18} color={color} />
+    <View style={styles.metricCard}>
+      <View style={[styles.metricGlow, { backgroundColor: `${accent}16` }]} />
+
+      <View style={styles.metricTopRow}>
+        <View
+          style={[styles.metricIconWrap, { backgroundColor: `${accent}14` }]}
+        >
+          <Ionicons name={icon} size={18} color={accent} />
+        </View>
+
+        <View style={styles.metricBadge}>
+          <Text style={styles.metricBadgeText}>{label}</Text>
+        </View>
       </View>
-      <Text style={[styles.summaryValue, { color }]}>{value}</Text>
-      <Text style={styles.summaryLabel}>{label}</Text>
+
+      <Text style={styles.metricValue}>{value}</Text>
+      {!!sublabel && <Text style={styles.metricSubLabel}>{sublabel}</Text>}
+
+      <View style={[styles.metricAccentLine, { backgroundColor: accent }]} />
     </View>
   );
 }
@@ -146,13 +185,13 @@ function NodeRow({
 }) {
   const pct =
     node.total > 0 ? Math.round((node.approved / node.total) * 100) : 0;
-  const barColor = pct === 100 ? "#059669" : accent;
   const cable = node.logs.reduce((s, l) => s + n2(l.collected_cable), 0);
+  const done = pct === 100;
 
   return (
     <Animated.View entering={FadeInDown.delay(delay).springify()}>
       <TouchableOpacity
-        activeOpacity={0.85}
+        activeOpacity={0.92}
         style={styles.nodeCard}
         onPress={() =>
           router.push({
@@ -168,53 +207,90 @@ function NodeRow({
           })
         }
       >
-        <View style={[styles.nodeAccent, { backgroundColor: accent }]} />
+        <View style={[styles.nodeGlow, { backgroundColor: `${accent}12` }]} />
 
-        <View style={styles.nodeBody}>
-          <View style={styles.nodeTop}>
-            <View style={styles.nodeLeft}>
-              <View style={styles.nodeIdRow}>
-                <Text style={styles.nodeId}>{node.node_id}</Text>
-                <View style={styles.nodeMiniBadge}>
-                  <Text style={styles.nodeMiniBadgeText}>Node</Text>
-                </View>
-              </View>
+        <View style={styles.nodeHeader}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <View style={styles.nodeIdRow}>
+              <Text style={styles.nodeId}>{node.node_id}</Text>
 
-              {node.node_name ? (
-                <Text style={styles.nodeName}>{node.node_name}</Text>
-              ) : null}
-
-              {node.city ? (
-                <Text style={styles.nodeCity}>
-                  {node.city}
-                  {node.province ? `, ${node.province}` : ""}
+              <View
+                style={[
+                  styles.nodeBadge,
+                  {
+                    backgroundColor: done
+                      ? "rgba(54,179,138,0.14)"
+                      : "rgba(255,255,255,0.06)",
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.nodeBadgeText,
+                    { color: done ? COLORS.secondary : COLORS.textSoft },
+                  ]}
+                >
+                  {done ? "Complete" : "In Progress"}
                 </Text>
-              ) : null}
+              </View>
             </View>
 
-            <View style={styles.nodeRight}>
-              <Text style={[styles.nodePct, { color: barColor }]}>{pct}%</Text>
-              <Text style={styles.nodeSpans}>
-                {node.approved}/{node.total} spans
+            {!!node.node_name && (
+              <Text style={styles.nodeName}>{node.node_name}</Text>
+            )}
+
+            {!!node.city && (
+              <Text style={styles.nodeMeta}>
+                {node.city}
+                {node.province ? `, ${node.province}` : ""}
               </Text>
-              {cable > 0 ? (
-                <Text style={styles.nodeCable}>{cable.toLocaleString()} m</Text>
-              ) : null}
-            </View>
+            )}
           </View>
 
-          <View style={styles.progressTrack}>
-            <View
+          <View style={styles.nodeScoreWrap}>
+            <Text
               style={[
-                styles.progressFill,
-                { width: `${pct}%` as any, backgroundColor: barColor },
+                styles.nodePct,
+                { color: done ? COLORS.secondary : COLORS.text },
               ]}
-            />
+            >
+              {pct}%
+            </Text>
+            <Text style={styles.nodeScoreLabel}>completion</Text>
           </View>
         </View>
 
-        <View style={styles.nodeArrowWrap}>
-          <Ionicons name="chevron-forward" size={18} color="#98A2B3" />
+        <View style={styles.nodeStatsRow}>
+          <View style={styles.nodeStatPill}>
+            <Text style={styles.nodeStatLabel}>Approved</Text>
+            <Text style={styles.nodeStatValue}>
+              {node.approved}/{node.total}
+            </Text>
+          </View>
+
+          <View style={styles.nodeStatPill}>
+            <Text style={styles.nodeStatLabel}>Cable</Text>
+            <Text style={styles.nodeStatValue}>
+              {cable > 0 ? `${cable.toLocaleString()} m` : "—"}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.progressTrack}>
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${pct}%` as const,
+                backgroundColor: accent,
+              },
+            ]}
+          />
+        </View>
+
+        <View style={styles.nodeFooter}>
+          <Text style={styles.nodeFooterText}>Open node details</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textSoft} />
         </View>
       </TouchableOpacity>
     </Animated.View>
@@ -241,28 +317,37 @@ function ProjectSection({
         <View
           style={[styles.projectHeaderGlow, { backgroundColor: `${accent}14` }]}
         />
-        <View style={[styles.projectIconWrap, { backgroundColor: accent }]}>
-          <Ionicons name="folder-open-outline" size={18} color="#FFFFFF" />
-        </View>
 
-        <View style={{ flex: 1 }}>
-          <Text style={styles.projectName}>{group.project_name}</Text>
-          <Text style={styles.projectSub}>
-            {group.nodes.length} node{group.nodes.length !== 1 ? "s" : ""} •{" "}
-            {doneLogs}/{totalLogs} approved
-          </Text>
+        <View style={styles.projectHeaderTop}>
+          <View
+            style={[styles.projectIconWrap, { backgroundColor: `${accent}14` }]}
+          >
+            <Ionicons name="layers-outline" size={18} color={accent} />
+          </View>
 
-          <View style={styles.projectProgressTrack}>
-            <View
-              style={[
-                styles.projectProgressFill,
-                { width: `${pct}%`, backgroundColor: accent },
-              ]}
-            />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.projectName}>{group.project_name}</Text>
+            <Text style={styles.projectSub}>
+              {group.nodes.length} node{group.nodes.length !== 1 ? "s" : ""} •{" "}
+              {doneLogs}/{totalLogs} approved
+            </Text>
+          </View>
+
+          <View style={[styles.projectPill, { borderColor: `${accent}2E` }]}>
+            <Text style={[styles.projectPillText, { color: accent }]}>
+              {pct}%
+            </Text>
           </View>
         </View>
 
-        <Text style={[styles.projectPct, { color: accent }]}>{pct}%</Text>
+        <View style={styles.projectProgressTrack}>
+          <View
+            style={[
+              styles.projectProgressFill,
+              { width: `${pct}%`, backgroundColor: accent },
+            ]}
+          />
+        </View>
       </View>
 
       {group.nodes.map((node, i) => (
@@ -312,11 +397,14 @@ export default function TasksScreen() {
   }
 
   const groups = useMemo(() => groupLogs(logs), [logs]);
+
   const totalSpans = logs.length;
   const totalCable = logs.reduce((s, l) => s + n2(l.collected_cable), 0);
   const approved = logs.filter(
     (l) => l.status === "approved" || l.status === "done",
   ).length;
+  const completion =
+    totalSpans > 0 ? Math.round((approved / totalSpans) * 100) : 0;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
@@ -332,71 +420,106 @@ export default function TasksScreen() {
               setRefreshing(true);
               load();
             }}
-            tintColor="#0B7A5A"
+            tintColor={COLORS.primary}
           />
         }
         ListHeaderComponent={
           <>
             <View style={styles.heroCard}>
-              <View style={styles.heroGlowTop} />
-              <View style={styles.heroGlowBottom} />
+              <View style={styles.heroGlowA} />
+              <View style={styles.heroGlowB} />
 
-              <Text style={styles.heroKicker}>Operations Overview</Text>
+              <View style={styles.heroBadge}>
+                <Text style={styles.heroBadgeText}>FIELD OPERATIONS</Text>
+              </View>
+
               <Text style={styles.title}>Teardown Logs</Text>
               <Text style={styles.titleSub}>
-                Browse grouped teardown progress by project and node.
+                Executive overview of teardown activity, project progress, and
+                cable recovery performance.
               </Text>
+
+              <View style={styles.heroFooter}>
+                <View style={styles.heroStatChip}>
+                  <Text style={styles.heroStatLabel}>Projects</Text>
+                  <Text style={styles.heroStatValue}>{groups.length}</Text>
+                </View>
+
+                <View style={styles.heroDivider} />
+
+                <View style={styles.heroStatChip}>
+                  <Text style={styles.heroStatLabel}>Completion</Text>
+                  <Text style={styles.heroStatValue}>{completion}%</Text>
+                </View>
+              </View>
             </View>
 
-            <View style={styles.summaryRow}>
-              <SummaryCard
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.metricsScrollContent}
+              style={styles.metricsScroll}
+            >
+              <MetricCard
                 label="Total Logs"
                 value={totalSpans}
-                color="#111827"
+                sublabel="Recorded field spans"
                 icon="albums-outline"
+                accent={COLORS.primary}
               />
-              <SummaryCard
+              <MetricCard
                 label="Approved"
                 value={approved}
-                color="#059669"
+                sublabel="Validated work items"
                 icon="checkmark-circle-outline"
+                accent={COLORS.secondary}
               />
-              <SummaryCard
+              <MetricCard
                 label="Cable"
                 value={
                   totalCable >= 1000
-                    ? `${(totalCable / 1000).toFixed(1)}km`
-                    : `${totalCable}m`
+                    ? `${(totalCable / 1000).toFixed(1)} km`
+                    : `${totalCable} m`
                 }
-                color="#0D47C9"
+                sublabel="Recovered material"
                 icon="git-network-outline"
+                accent={COLORS.accentBlue}
               />
-            </View>
+              <MetricCard
+                label="Completion"
+                value={`${completion}%`}
+                sublabel="Execution performance"
+                icon="pulse-outline"
+                accent={COLORS.primary}
+              />
+            </ScrollView>
 
             {loading && (
-              <View style={styles.centerBox}>
-                <ActivityIndicator color="#0B7A5A" />
+              <View style={styles.stateCard}>
+                <ActivityIndicator color={COLORS.primary} />
                 <Text style={styles.centerText}>Loading teardown logs…</Text>
               </View>
             )}
 
             {!loading && error && (
-              <View style={styles.centerBox}>
+              <View style={styles.stateCard}>
                 <View style={styles.stateIconWrap}>
                   <Ionicons
                     name="alert-circle-outline"
                     size={30}
-                    color="#B42318"
+                    color={COLORS.danger}
                   />
                 </View>
                 <Text style={styles.emptyTitle}>Failed to load</Text>
                 <Text style={styles.centerText}>{error}</Text>
+
                 <TouchableOpacity
                   onPress={() => {
                     setLoading(true);
                     load();
                   }}
                   style={styles.retryBtn}
+                  activeOpacity={0.9}
                 >
                   <Text style={styles.retryText}>Retry</Text>
                 </TouchableOpacity>
@@ -404,12 +527,12 @@ export default function TasksScreen() {
             )}
 
             {!loading && !error && logs.length === 0 && (
-              <View style={styles.centerBox}>
+              <View style={styles.stateCard}>
                 <View style={styles.stateIconWrap}>
                   <Ionicons
                     name="document-text-outline"
                     size={30}
-                    color="#667085"
+                    color={COLORS.textSoft}
                   />
                 </View>
                 <Text style={styles.emptyTitle}>No logs yet</Text>
@@ -427,7 +550,7 @@ export default function TasksScreen() {
             delay={80 + index * 60}
           />
         )}
-        ListFooterComponent={<View style={{ height: 40 }} />}
+        ListFooterComponent={<View style={{ height: 50 }} />}
       />
     </SafeAreaView>
   );
@@ -436,7 +559,7 @@ export default function TasksScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#F4F6F8",
+    backgroundColor: COLORS.bg,
   },
 
   listContent: {
@@ -445,149 +568,246 @@ const styles = StyleSheet.create({
   },
 
   heroCard: {
+    backgroundColor: COLORS.surface,
     borderRadius: 28,
-    padding: 20,
-    marginBottom: 16,
-    backgroundColor: "#13211C",
+    padding: 22,
     overflow: "hidden",
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: COLORS.borderDark,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
   },
 
-  heroGlowTop: {
+  heroGlowA: {
     position: "absolute",
-    top: -36,
-    right: -18,
-    width: 160,
-    height: 160,
+    width: 180,
+    height: 180,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(11,122,90,0.09)",
+    right: -28,
+    top: -38,
   },
 
-  heroGlowBottom: {
+  heroGlowB: {
     position: "absolute",
-    bottom: -20,
-    left: -12,
-    width: 100,
-    height: 100,
+    width: 120,
+    height: 120,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    left: -18,
+    bottom: -24,
   },
 
-  heroKicker: {
-    fontSize: 11,
+  heroBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 14,
+  },
+
+  heroBadgeText: {
+    color: COLORS.textSoft,
+    fontSize: 10,
     fontWeight: "800",
-    color: "rgba(255,255,255,0.66)",
-    textTransform: "uppercase",
     letterSpacing: 1,
-    marginBottom: 10,
   },
 
   title: {
-    fontSize: 28,
+    color: COLORS.text,
+    fontSize: 30,
     fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: -0.7,
+    letterSpacing: -0.8,
   },
 
   titleSub: {
+    color: COLORS.textSoft,
     fontSize: 13,
-    color: "rgba(255,255,255,0.72)",
-    marginTop: 6,
-    lineHeight: 19,
+    lineHeight: 20,
+    marginTop: 8,
+    maxWidth: "92%",
     fontWeight: "500",
   },
 
-  summaryRow: {
+  heroFooter: {
+    marginTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.07)",
+    paddingTop: 14,
     flexDirection: "row",
-    gap: 10,
-    marginBottom: 20,
-  },
-
-  summaryCard: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 12,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#E9EDF2",
-    shadowColor: "#101828",
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 2,
   },
 
-  summaryIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 10,
+  heroStatChip: {
+    gap: 2,
   },
 
-  summaryValue: {
-    fontSize: 18,
+  heroStatLabel: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+
+  heroStatValue: {
+    color: COLORS.text,
+    fontSize: 20,
     fontWeight: "900",
   },
 
-  summaryLabel: {
-    marginTop: 4,
-    fontSize: 10,
-    color: "#98A2B3",
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
+  heroDivider: {
+    width: 1,
+    height: 34,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    marginHorizontal: 18,
   },
 
-  centerBox: {
-    backgroundColor: "#FFFFFF",
+  metricsScroll: {
+    marginBottom: 20,
+  },
+
+  metricsScrollContent: {
+    paddingRight: 8,
+    gap: 12,
+  },
+
+  metricCard: {
+    width: 176,
+    backgroundColor: COLORS.surface,
     borderRadius: 24,
-    padding: 36,
-    alignItems: "center",
-    marginBottom: 12,
+    padding: 16,
     borderWidth: 1,
-    borderColor: "#E9EDF2",
+    borderColor: COLORS.borderDark,
+    overflow: "hidden",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  },
+
+  metricGlow: {
+    position: "absolute",
+    width: 110,
+    height: 110,
+    borderRadius: 999,
+    right: -18,
+    top: -22,
+  },
+
+  metricTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+
+  metricIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  metricBadge: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+
+  metricBadgeText: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+
+  metricValue: {
+    color: COLORS.text,
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: -0.7,
+  },
+
+  metricSubLabel: {
+    marginTop: 6,
+    color: COLORS.textSoft,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+
+  metricAccentLine: {
+    marginTop: 16,
+    width: 52,
+    height: 4,
+    borderRadius: 999,
+  },
+
+  stateCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 26,
+    padding: 28,
+    alignItems: "center",
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderDark,
   },
 
   stateIconWrap: {
     width: 64,
     height: 64,
-    borderRadius: 32,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F8FAFC",
-    marginBottom: 10,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    marginBottom: 12,
   },
 
   centerText: {
     fontSize: 13,
-    color: "#98A2B3",
+    color: COLORS.textSoft,
     marginTop: 8,
     textAlign: "center",
     lineHeight: 19,
   },
 
   emptyTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#111827",
-    marginTop: 2,
+    fontSize: 17,
+    fontWeight: "900",
+    color: COLORS.text,
   },
 
   retryBtn: {
-    marginTop: 14,
-    backgroundColor: "#0B7A5A",
-    borderRadius: 14,
+    marginTop: 16,
+    backgroundColor: COLORS.primary,
+    borderRadius: 999,
     paddingHorizontal: 24,
-    paddingVertical: 11,
+    paddingVertical: 13,
+    shadowColor: COLORS.primary,
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
   },
 
   retryText: {
-    color: "#FFFFFF",
-    fontWeight: "800",
+    color: COLORS.text,
+    fontWeight: "900",
     fontSize: 13,
+    letterSpacing: 0.2,
   },
 
   projectSection: {
@@ -595,53 +815,74 @@ const styles = StyleSheet.create({
   },
 
   projectHeaderCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    padding: 14,
-    marginBottom: 10,
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#E9EDF2",
+    borderColor: COLORS.borderDark,
     overflow: "hidden",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
 
   projectHeaderGlow: {
     position: "absolute",
-    width: 100,
-    height: 100,
+    width: 120,
+    height: 120,
     borderRadius: 999,
-    right: -25,
-    top: -25,
+    right: -22,
+    top: -24,
+  },
+
+  projectHeaderTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
   },
 
   projectIconWrap: {
     width: 42,
     height: 42,
-    borderRadius: 16,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
   },
 
   projectName: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "900",
-    color: "#111827",
+    color: COLORS.text,
   },
 
   projectSub: {
     fontSize: 11,
-    color: "#98A2B3",
+    color: COLORS.textSoft,
     fontWeight: "600",
-    marginTop: 3,
-    marginBottom: 8,
+    marginTop: 4,
+  },
+
+  projectPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+
+  projectPillText: {
+    fontSize: 12,
+    fontWeight: "900",
   },
 
   projectProgressTrack: {
-    height: 6,
+    height: 8,
     borderRadius: 999,
-    backgroundColor: "#F2F4F7",
+    backgroundColor: "rgba(255,255,255,0.08)",
     overflow: "hidden",
   },
 
@@ -650,52 +891,34 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
 
-  projectPct: {
-    marginLeft: 12,
-    fontSize: 15,
-    fontWeight: "900",
-  },
-
   nodeCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    marginBottom: 10,
-    overflow: "hidden",
+    backgroundColor: COLORS.surface,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#E9EDF2",
-    shadowColor: "#101828",
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
+    borderColor: COLORS.borderDark,
+    overflow: "hidden",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   },
 
-  nodeAccent: {
-    width: 4,
-    alignSelf: "stretch",
+  nodeGlow: {
+    position: "absolute",
+    width: 90,
+    height: 90,
+    borderRadius: 999,
+    right: -22,
+    top: -22,
   },
 
-  nodeBody: {
-    flex: 1,
-    padding: 14,
-  },
-
-  nodeTop: {
+  nodeHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 12,
-  },
-
-  nodeLeft: {
-    flex: 1,
-    paddingRight: 10,
-  },
-
-  nodeRight: {
-    alignItems: "flex-end",
-    gap: 2,
+    marginBottom: 14,
   },
 
   nodeIdRow: {
@@ -705,68 +928,113 @@ const styles = StyleSheet.create({
   },
 
   nodeId: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "900",
-    color: "#111827",
+    color: COLORS.text,
+    letterSpacing: -0.3,
   },
 
-  nodeMiniBadge: {
-    backgroundColor: "#F3F4F6",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+  nodeBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.05)",
   },
 
-  nodeMiniBadgeText: {
-    fontSize: 9,
-    color: "#667085",
-    fontWeight: "700",
+  nodeBadgeText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.45,
     textTransform: "uppercase",
   },
 
   nodeName: {
-    fontSize: 12,
-    color: "#667085",
+    marginTop: 6,
+    color: COLORS.textSoft,
+    fontSize: 13,
     fontWeight: "600",
-    marginTop: 4,
   },
 
-  nodeCity: {
+  nodeMeta: {
+    marginTop: 4,
+    color: COLORS.textMuted,
     fontSize: 11,
-    color: "#98A2B3",
-    marginTop: 2,
+    fontWeight: "500",
+  },
+
+  nodeScoreWrap: {
+    alignItems: "flex-end",
   },
 
   nodePct: {
-    fontSize: 18,
+    fontSize: 26,
     fontWeight: "900",
+    letterSpacing: -0.8,
   },
 
-  nodeSpans: {
+  nodeScoreLabel: {
+    color: COLORS.textMuted,
     fontSize: 10,
-    color: "#98A2B3",
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
     fontWeight: "700",
+    marginTop: 2,
   },
 
-  nodeCable: {
+  nodeStatsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  nodeStatPill: {
+    flex: 1,
+    backgroundColor: COLORS.surface2,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.04)",
+  },
+
+  nodeStatLabel: {
+    color: COLORS.textMuted,
     fontSize: 10,
-    color: "#667085",
-    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    fontWeight: "800",
   },
 
-  nodeArrowWrap: {
-    paddingRight: 14,
+  nodeStatValue: {
+    marginTop: 4,
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: "800",
   },
 
   progressTrack: {
-    height: 6,
-    backgroundColor: "#F2F4F7",
+    height: 8,
+    backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 999,
     overflow: "hidden",
   },
 
   progressFill: {
-    height: 6,
+    height: 8,
     borderRadius: 999,
+  },
+
+  nodeFooter: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  nodeFooterText: {
+    color: COLORS.textSoft,
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

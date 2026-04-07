@@ -569,12 +569,15 @@ export default function SelectPairScreen() {
 
     cacheGet<Span[]>(CACHE_KEY).then((cached) => {
       if (cached?.length) {
-        if (cached.length === 1) {
-          navigateToKabila(cached[0]);
+        const active = cached.filter((s) => s.status !== "completed");
+        if (active.length === 1) {
+          navigateToKabila(active[0]);
           return;
         }
-        setSpans(cached);
-        setStatus("ok");
+        if (active.length > 0) {
+          setSpans(active);
+          setStatus("ok");
+        }
       }
     });
 
@@ -584,22 +587,30 @@ export default function SelectPairScreen() {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(CACHE_KEY, list);
 
-        if (list.length === 0) {
+        const active = list.filter((s) => s.status !== "completed");
+
+        if (active.length === 0) {
           setStatus("empty");
           return;
         }
 
-        if (list.length === 1) {
-          navigateToKabila(list[0]);
+        if (active.length === 1) {
+          navigateToKabila(active[0]);
           return;
         }
 
-        setSpans(list);
+        setSpans(active);
         setStatus("ok");
       })
       .catch(() => {
         cacheGet<Span[]>(CACHE_KEY).then((cached) => {
-          if (!cached?.length) setStatus("error");
+          if (!cached?.length) {
+            setStatus("error");
+          } else {
+            const active = cached.filter((s) => s.status !== "completed");
+            if (active.length === 0) setStatus("empty");
+            // else: cache handler already set spans + "ok"
+          }
         });
       });
   }, [pole_id, pole_code, pole_name]);
@@ -672,17 +683,19 @@ export default function SelectPairScreen() {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(CACHE_KEY, list);
 
-        if (list.length === 0) {
+        const active = list.filter((s) => s.status !== "completed");
+
+        if (active.length === 0) {
           setStatus("empty");
           return;
         }
 
-        if (list.length === 1) {
-          navigateToKabila(list[0]);
+        if (active.length === 1) {
+          navigateToKabila(active[0]);
           return;
         }
 
-        setSpans(list);
+        setSpans(active);
         setStatus("ok");
       })
       .catch(() => setStatus("error"));

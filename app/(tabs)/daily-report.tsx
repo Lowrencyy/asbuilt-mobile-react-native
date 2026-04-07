@@ -775,7 +775,7 @@ export default function DailyReportScreen() {
               <View style={styles.heroGlowTwo} />
 
               <View style={styles.heroLeft}>
-                <Text style={styles.heroTitle}>Daily{`\n`}challenge</Text>
+                <Text style={styles.heroTitle}>Daily{`\n`}Report</Text>
                 <Text style={styles.heroSubtitle}>
                   Review, monitor, and submit teardown reports before cutoff.
                 </Text>

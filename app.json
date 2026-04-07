@@ -1,13 +1,13 @@
 {
   "expo": {
     "name": "POLE MASTER",
-    "slug": "telcovantage-polemaster",
+    "slug": "my-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/telco-mainlogo.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true
     },
@@ -22,7 +22,7 @@
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
       ],
-      "package": "com.renzydagreat.myapp"
+      "package": "com.renzydagreat.telcovantagepolemaster"
     },
     "web": {
       "output": "static",
@@ -40,8 +40,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/telco-mainlogo.png",
-          "backgroundColor": "#ffffff"
+          "image": "./assets/images/telco-mainlogo.png"
         }
       ]
     ],
@@ -54,6 +53,7 @@
       "eas": {
         "projectId": "eb2dfddf-f9fc-418a-bb9b-96c53e8545d4"
       }
-    }
+    },
+    "owner": "renzydagreat"
   }
 }

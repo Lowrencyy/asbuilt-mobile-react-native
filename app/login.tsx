@@ -2,10 +2,11 @@ import api, { setAuthToken } from "@/lib/api";
 import { resetPrefetchSession } from "@/lib/prefetch";
 import { tokenStore } from "@/lib/token";
 import { startLocationSync } from "@/lib/location-sync";
+import { isOnboardingDone } from "./onboarding";
 import TabTransitionOverlay from "@/components/TabTransitionOverlay";
 import { AntDesign, FontAwesome, Ionicons } from "@expo/vector-icons";
 import * as LocalAuthentication from "expo-local-authentication";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -32,6 +33,8 @@ import Animated, {
 } from "react-native-reanimated";
 
 export default function LoginScreen() {
+  const { fromOnboarding } = useLocalSearchParams<{ fromOnboarding?: string }>();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -52,6 +55,16 @@ export default function LoginScreen() {
   // Check biometric capability and saved session on mount
   useEffect(() => {
     (async () => {
+      // Skip the file-system check when navigating directly from onboarding
+      // to avoid a race condition where the flag hasn't flushed yet
+      if (fromOnboarding !== "1") {
+        const onboardingDone = await isOnboardingDone();
+        if (!onboardingDone) {
+          router.replace("/onboarding" as any);
+          return;
+        }
+      }
+
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
       const isEnrolled = await LocalAuthentication.isEnrolledAsync();
       const canUseBiometric = hasHardware && isEnrolled;
@@ -60,7 +73,7 @@ export default function LoginScreen() {
       const savedToken = await tokenStore.get();
       setHasSavedSession(!!savedToken);
     })();
-  }, []);
+  }, [fromOnboarding]);
 
   // Auto-prompt fingerprint once when screen loads if session exists
   useFocusEffect(
@@ -274,6 +287,8 @@ export default function LoginScreen() {
         visible={showTransition}
         onDone={() => router.replace("/(tabs)" as any)}
       />
+
+
     </SafeAreaView>
   );
 }
