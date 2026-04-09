@@ -44,6 +44,16 @@ async function handleResponse(response: Response) {
   return { data };
 }
 
+const TIMEOUT_MS = 10_000; // 10 seconds
+
+function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
 const api = {
   post: async (url: string, body: any) => {
     const isFormData = body instanceof FormData;
@@ -51,7 +61,7 @@ const api = {
     const finalUrl = `${BASE_URL}${url}`;
     console.log("POST URL:", finalUrl);
 
-    const response = await fetch(finalUrl, {
+    const response = await fetchWithTimeout(finalUrl, {
       method: "POST",
       headers,
       body: isFormData ? body : JSON.stringify(body),
@@ -63,7 +73,7 @@ const api = {
     const finalUrl = `${BASE_URL}${url}`;
     console.log("GET URL:", finalUrl);
 
-    const response = await fetch(finalUrl, {
+    const response = await fetchWithTimeout(finalUrl, {
       method: "GET",
       headers,
     });
@@ -74,7 +84,7 @@ const api = {
     const finalUrl = `${BASE_URL}${url}`;
     console.log("PUT URL:", finalUrl);
 
-    const response = await fetch(finalUrl, {
+    const response = await fetchWithTimeout(finalUrl, {
       method: "PUT",
       headers,
       body: JSON.stringify(body),
@@ -86,7 +96,7 @@ const api = {
     const finalUrl = `${BASE_URL}${url}`;
     console.log("DELETE URL:", finalUrl);
 
-    const response = await fetch(finalUrl, {
+    const response = await fetchWithTimeout(finalUrl, {
       method: "DELETE",
       headers,
     });

@@ -75,20 +75,20 @@ export default function LoginScreen() {
     })();
   }, [fromOnboarding]);
 
-  // Auto-prompt fingerprint once when screen loads if session exists
+  // Dismiss keyboard when screen gains focus — empty deps so it never re-fires on state change
   useFocusEffect(
     useCallback(() => {
       Keyboard.dismiss();
-      screenOpacity.value = withTiming(1, { duration: 300 });
-      screenTranslateY.value = withTiming(0, { duration: 300 });
-
-      if (!autoPromptDone.current) {
-        autoPromptDone.current = true;
-        // Small delay so the screen renders first
-        setTimeout(() => triggerBiometric(false), 400);
-      }
-    }, [biometricAvailable, hasSavedSession]),
+    }, []),
   );
+
+  // Auto-prompt fingerprint once when biometric + session state are ready
+  useEffect(() => {
+    if (!autoPromptDone.current && biometricAvailable && hasSavedSession) {
+      autoPromptDone.current = true;
+      setTimeout(() => triggerBiometric(false), 400);
+    }
+  }, [biometricAvailable, hasSavedSession]);
 
   function navigateToDashboard() {
     setShowTransition(true);
@@ -177,7 +177,7 @@ export default function LoginScreen() {
           >
             <View style={styles.inner}>
               {/* Brand */}
-              <Animated.View entering={ZoomIn.delay(100).springify()} style={styles.brand}>
+              <Animated.View entering={ZoomIn.delay(100).duration(400)} style={styles.brand}>
                 <Image
                   source={require("@/assets/images/telcovantage-logo.png")}
                   style={styles.logoImage}
@@ -186,13 +186,13 @@ export default function LoginScreen() {
               </Animated.View>
 
               {/* Title */}
-              <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.titleWrap}>
+              <Animated.View entering={FadeInDown.delay(200).duration(350)} style={styles.titleWrap}>
                 <Text style={styles.title}>Login to your Account</Text>
               </Animated.View>
 
               {/* Fingerprint button — show if biometric available + has saved session */}
               {biometricAvailable && hasSavedSession && (
-                <Animated.View entering={FadeInDown.delay(250).springify()} style={styles.biometricWrap}>
+                <Animated.View entering={FadeInDown.delay(250).duration(350)} style={styles.biometricWrap}>
                   <TouchableOpacity
                     style={styles.biometricBtn}
                     onPress={() => triggerBiometric(true)}
@@ -205,7 +205,7 @@ export default function LoginScreen() {
               )}
 
               {/* Email */}
-              <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.inputWrap}>
+              <Animated.View entering={FadeInDown.delay(300).duration(350)} style={styles.inputWrap}>
                 <TextInput
                   style={styles.input}
                   placeholder="Email"
@@ -219,7 +219,7 @@ export default function LoginScreen() {
               </Animated.View>
 
               {/* Password */}
-              <Animated.View entering={FadeInDown.delay(400).springify()} style={styles.inputWrap}>
+              <Animated.View entering={FadeInDown.delay(400).duration(350)} style={styles.inputWrap}>
                 <View>
                   <TextInput
                     style={styles.input}
@@ -239,7 +239,7 @@ export default function LoginScreen() {
               </Animated.View>
 
               {/* Sign In */}
-              <Animated.View entering={FadeInDown.delay(500).springify()} style={styles.btnWrap}>
+              <Animated.View entering={FadeInDown.delay(500).duration(350)} style={styles.btnWrap}>
                 <TouchableOpacity
                   activeOpacity={0.85}
                   disabled={loading}
@@ -255,14 +255,14 @@ export default function LoginScreen() {
               </Animated.View>
 
               {/* Divider */}
-              <Animated.View entering={FadeInDown.delay(600).springify()} style={styles.dividerRow}>
+              <Animated.View entering={FadeInDown.delay(600).duration(350)} style={styles.dividerRow}>
                 <View style={styles.dividerLine} />
                 <Text style={styles.dividerText}>Do you have Admin Concern?</Text>
                 <View style={styles.dividerLine} />
               </Animated.View>
 
               {/* Social buttons */}
-              <Animated.View entering={FadeInDown.delay(700).springify()} style={styles.socialRow}>
+              <Animated.View entering={FadeInDown.delay(700).duration(350)} style={styles.socialRow}>
                 {[
                   { icon: <AntDesign name="google" size={20} color="#DB4437" /> },
                   { icon: <FontAwesome name="facebook" size={20} color="#1877F2" /> },
@@ -275,7 +275,7 @@ export default function LoginScreen() {
               </Animated.View>
 
               {/* Footer */}
-              <Animated.View entering={FadeInDown.delay(800).springify()} style={styles.footerRow}>
+              <Animated.View entering={FadeInDown.delay(800).duration(350)} style={styles.footerRow}>
                 <Text style={styles.footerText}>Do you have problem upon Login?</Text>
               </Animated.View>
             </View>

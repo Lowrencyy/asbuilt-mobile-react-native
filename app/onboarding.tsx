@@ -303,7 +303,7 @@ export default function OnboardingScreen() {
   useEffect(() => {
     isOnboardingDone().then((onboarded) => {
       if (onboarded) {
-        router.replace("/login" as never);
+        router.replace({ pathname: "/loading", params: { next: "/login" } } as never);
         return;
       }
       setChecking(false);

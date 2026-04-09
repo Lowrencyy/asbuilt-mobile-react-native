@@ -1649,20 +1649,29 @@ function ProjectCard({ item }: { item: Project }) {
 export default function Index() {
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const TAB_HEIGHT = screenWidth < 360 ? 60 : 74;
-  const TAB_BOTTOM = screenWidth < 360 ? 10 : 16;
-  const TAB_BAR_H =
-    TAB_HEIGHT + TAB_BOTTOM + (Platform.OS === "ios" ? insets.bottom : 0);
+
   const isAndroid = Platform.OS === "android";
 
+  const TAB_HEIGHT = screenWidth < 360 ? 60 : 68;
+  const TAB_BOTTOM = screenWidth < 360 ? 8 : 10;
+  const TAB_BAR_H =
+    TAB_HEIGHT + TAB_BOTTOM + (Platform.OS === "ios" ? insets.bottom : 0);
+
   const SHEET_WIDTH = screenWidth - 8;
-  const COLLAPSED_VISIBLE = (isAndroid ? 20 : 82) + TAB_BAR_H;
 
-  const expandedTop = isAndroid ? 54 : 72;
+  const expandedTop = isAndroid ? 44 : 64;
+  const SHEET_BOTTOM_GAP = isAndroid ? 14 : 18;
+
+  const COLLAPSED_HEADER_HEIGHT = Math.max(
+    isAndroid ? 92 : 100,
+    Math.min(screenHeight * 0.115, isAndroid ? 102 : 110),
+  );
+
   const SHEET_HEIGHT =
-    screenHeight - expandedTop - Math.max(insets.bottom, isAndroid ? 0 : 6);
+    screenHeight - expandedTop - Math.max(insets.bottom, isAndroid ? 0 : 8);
 
-  const collapsedTop = screenHeight - COLLAPSED_VISIBLE - (isAndroid ? 16 : 24);
+  const collapsedTop =
+    screenHeight - TAB_BAR_H - COLLAPSED_HEADER_HEIGHT - SHEET_BOTTOM_GAP;
 
   const expandedTranslateY = expandedTop - collapsedTop;
   const collapsedTranslateY = 0;
@@ -1726,7 +1735,7 @@ export default function Index() {
       }),
     ).start();
     return () => syncSpin.stopAnimation();
-  }, [syncing]);
+  }, [syncing, syncSpin]);
 
   function formatLastSynced(ts: number | null): string {
     if (!ts) return "Never synced";
@@ -1832,6 +1841,7 @@ export default function Index() {
         const last = await Location.getLastKnownPositionAsync({
           maxAge: 300000,
         }).catch(() => null);
+
         if (last) {
           setCoords({ lat: last.coords.latitude, lon: last.coords.longitude });
           return;
@@ -1843,8 +1853,10 @@ export default function Index() {
           }),
           new Promise<null>((res) => setTimeout(() => res(null), 60000)),
         ]);
-        if (loc)
+
+        if (loc) {
           setCoords({ lat: loc.coords.latitude, lon: loc.coords.longitude });
+        }
       } catch {
         // non-blocking
       }
@@ -1859,7 +1871,9 @@ export default function Index() {
 
   useEffect(() => {
     if (!coords) return;
+
     const { lat, lon } = coords;
+
     fetch(
       `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
       {
@@ -1874,6 +1888,7 @@ export default function Index() {
           geo.address?.village ??
           geo.address?.county ??
           "Your Location";
+
         return fetch(
           `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
             `&current=temperature_2m,relative_humidity_2m,precipitation_probability,weather_code,wind_speed_10m,uv_index,is_day` +
@@ -1903,7 +1918,9 @@ export default function Index() {
 
     tokenStore.getUser().then((u: any) => {
       const role = (u?.role ?? "").toLowerCase();
-      const endpoint = PRIVILEGED.includes(role) ? "/projects/all" : "/projects";
+      const endpoint = PRIVILEGED.includes(role)
+        ? "/projects/all"
+        : "/projects";
 
       api
         .get(endpoint)
@@ -1980,7 +1997,7 @@ export default function Index() {
 
   useEffect(() => {
     animateTo(collapsedTranslateY);
-  }, []);
+  }, [collapsedTranslateY]);
 
   const panResponder = useMemo(
     () =>
@@ -2144,7 +2161,7 @@ export default function Index() {
               style={[styles.collapsedHintRow, { opacity: swipeHintOpacity }]}
             >
               <Text style={styles.collapsedArrow}>↑</Text>
-              <View>
+              <View style={styles.collapsedTextWrap}>
                 <Text style={styles.collapsedTitle}>Projects Ready</Text>
                 <Text style={styles.collapsedSub}>
                   Swipe up to select project
@@ -2292,10 +2309,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     backgroundColor: "#FFFFFF",
     alignItems: "center",
+    justifyContent: "center",
     borderBottomWidth: 1,
-    borderBottomColor: "#F3F4F6",
+    borderBottomColor: "#EEF3F0",
     overflow: "visible",
     zIndex: 4,
+    minHeight: 78,
   },
 
   handleWrap: {
@@ -2309,7 +2328,7 @@ const styles = StyleSheet.create({
     width: 54,
     height: 6,
     borderRadius: 999,
-    backgroundColor: "#D8DCE8",
+    backgroundColor: "#CDD6D1",
   },
 
   preloadTextWrap: {
@@ -2629,28 +2648,35 @@ const styles = StyleSheet.create({
   collapsedHintRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 4,
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 8,
+    paddingBottom: 0,
+  },
+
+  collapsedTextWrap: {
+    alignItems: "flex-start",
   },
 
   collapsedArrow: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: "900",
     color: PRIMARY,
     marginTop: -2,
   },
 
   collapsedTitle: {
-    fontSize: 21,
-    fontWeight: "700",
+    fontSize: 18,
+    fontWeight: "800",
     color: PRIMARY,
     letterSpacing: 0.1,
   },
 
   collapsedSub: {
-    fontSize: 15,
+    fontSize: 12,
     color: "#6b7280",
     marginTop: 1,
+    fontWeight: "500",
   },
 
   emptyWrap: {

@@ -833,16 +833,21 @@ export default function SelectPairScreen() {
                 color="#667085"
               />
             </View>
-            <Text style={styles.centerTitle}>No spans found</Text>
+            <Text style={styles.centerTitle}>No Span Available</Text>
             <Text style={styles.centerSub}>
-              This pole does not have any available connections.
+              This pole does not have any available span connections.
             </Text>
 
             <Pressable
               style={[styles.primaryButton, { backgroundColor: "#111827" }]}
-              onPress={() => router.back()}
+              onPress={() =>
+                router.replace({
+                  pathname: "/projects/poles",
+                  params: { node_id, project_id, project_name, accent },
+                } as any)
+              }
             >
-              <Text style={styles.primaryButtonText}>Go Back</Text>
+              <Text style={styles.primaryButtonText}>Back to Pole List</Text>
             </Pressable>
           </View>
         )}
