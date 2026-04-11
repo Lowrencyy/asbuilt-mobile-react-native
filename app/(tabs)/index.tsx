@@ -5,7 +5,7 @@ import { projectStore, type Project } from "@/lib/store";
 import { processSyncQueue, queueCount } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
 import { Asset } from "expo-asset";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Location from "expo-location";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -131,24 +131,12 @@ async function loadAssetMaps(): Promise<AssetMaps> {
     try {
       const asset = Asset.fromModule(mod);
       await asset.downloadAsync();
-      const uri = asset.localUri ?? asset.uri;
-      if (!uri) return "";
-
-      if (uri.startsWith("file://")) {
-        const b64 = await FileSystem.readAsStringAsync(uri, {
-          encoding: "base64" as any,
-        });
-        return `data:${mime};base64,${b64}`;
-      }
-
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      return await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
+      const localUri = asset.localUri;
+      if (!localUri) return "";
+      const b64 = await FileSystem.readAsStringAsync(localUri, {
+        encoding: FileSystem.EncodingType.Base64,
       });
+      return `data:${mime};base64,${b64}`;
     } catch {
       return "";
     }
@@ -173,10 +161,7 @@ async function loadAssetMaps(): Promise<AssetMaps> {
       icons: Object.fromEntries(iconEntries),
     };
   } catch {
-    return {
-      bg: {},
-      icons: {},
-    };
+    return { bg: {}, icons: {} };
   }
 }
 
@@ -1660,18 +1645,27 @@ export default function Index() {
   const SHEET_WIDTH = screenWidth - 8;
 
   const expandedTop = isAndroid ? 44 : 64;
-  const SHEET_BOTTOM_GAP = isAndroid ? 14 : 18;
+  const SHEET_BOTTOM_GAP = 16; // same on all platforms
 
   const COLLAPSED_HEADER_HEIGHT = Math.max(
-    isAndroid ? 92 : 100,
-    Math.min(screenHeight * 0.115, isAndroid ? 102 : 110),
-  );
+    96,
+    Math.min(screenHeight * 0.115, 106),
+  ); // same on all platforms
+
+  const PANEL_PUSH_DOWN = 30; // same on all platforms
 
   const SHEET_HEIGHT =
-    screenHeight - expandedTop - Math.max(insets.bottom, isAndroid ? 0 : 8);
+    screenHeight -
+    expandedTop -
+    Math.max(insets.bottom, isAndroid ? 0 : 8) -
+    PANEL_PUSH_DOWN;
 
   const collapsedTop =
-    screenHeight - TAB_BAR_H - COLLAPSED_HEADER_HEIGHT - SHEET_BOTTOM_GAP;
+    screenHeight -
+    TAB_BAR_H -
+    COLLAPSED_HEADER_HEIGHT -
+    SHEET_BOTTOM_GAP +
+    PANEL_PUSH_DOWN;
 
   const expandedTranslateY = expandedTop - collapsedTop;
   const collapsedTranslateY = 0;
@@ -2057,6 +2051,9 @@ export default function Index() {
           javaScriptEnabled
           domStorageEnabled
           mixedContentMode="always"
+          allowFileAccess
+          allowFileAccessFromFileURLs
+          allowUniversalAccessFromFileURLs
         />
 
         <View style={styles.syncWrapper}>
