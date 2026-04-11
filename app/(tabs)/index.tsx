@@ -1583,37 +1583,12 @@ function ProjectCard({ item }: { item: Project }) {
         <Text style={styles.cardTitle}>
           {String(item.project_name || "").toUpperCase()}
         </Text>
-        <Text style={styles.cardDesc}>Project Code: {item.project_code}</Text>
+        <View style={styles.projectCodeBadge}>
+          <Text style={styles.cardDesc}>Project Code: {item.project_code}</Text>
+        </View>
 
         <View style={[styles.cardDivider, { backgroundColor: colors.line }]} />
 
-        <View style={styles.metaRow}>
-          <View
-            style={[
-              styles.infoPill,
-              {
-                backgroundColor: colors.pillBg,
-                borderColor: `${colors.accent}18`,
-              },
-            ]}
-          >
-            <Text style={[styles.infoPillLabel, { color: colors.pillText }]}>
-              Status
-            </Text>
-            <Text style={[styles.infoPillValue, { color: colors.pillText }]}>
-              {item.status}
-            </Text>
-          </View>
-
-          <View
-            style={[styles.infoPill, { borderColor: `${colors.accent}12` }]}
-          >
-            <Text style={styles.infoPillLabel}>Client</Text>
-            <Text style={styles.infoPillValue} numberOfLines={1}>
-              {item.client}
-            </Text>
-          </View>
-        </View>
 
         <TouchableOpacity
           activeOpacity={0.9}
@@ -1696,9 +1671,14 @@ export default function Index() {
 
   useEffect(() => {
     tokenStore.getUser().then((u: any) => {
-      const first = u?.first_name ?? "";
-      const last = u?.last_name ?? "";
-      const name = `${first} ${last}`.trim();
+      if (!u) return;
+      const name =
+        u.first_name?.trim() ||
+        u.name?.trim() ||
+        u.full_name?.trim() ||
+        u.username?.trim() ||
+        u.email?.split("@")[0] ||
+        "";
       if (name) setUserName(name);
     });
   }, []);
@@ -2542,11 +2522,19 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
+  projectCodeBadge: {
+    alignSelf: "center",
+    borderWidth: 1.5,
+    borderColor: "#A8C9B8",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginTop: 6,
+  },
   cardDesc: {
     fontSize: 14,
     lineHeight: 20,
     color: "#537365",
-    marginTop: 6,
     textAlign: "center",
     fontWeight: "700",
   },

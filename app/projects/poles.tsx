@@ -285,11 +285,27 @@ html,body{
   });
   // Also seed from span endpoint data — catches poles from other nodes
   spans.forEach((sp) => {
-    if (sp.from_pole?.id && sp.from_pole.map_latitude && sp.from_pole.map_longitude && !gpsMap[sp.from_pole.id]) {
-      gpsMap[sp.from_pole.id] = { lat: parseFloat(sp.from_pole.map_latitude), lng: parseFloat(sp.from_pole.map_longitude) };
+    if (
+      sp.from_pole?.id &&
+      sp.from_pole.map_latitude &&
+      sp.from_pole.map_longitude &&
+      !gpsMap[sp.from_pole.id]
+    ) {
+      gpsMap[sp.from_pole.id] = {
+        lat: parseFloat(sp.from_pole.map_latitude),
+        lng: parseFloat(sp.from_pole.map_longitude),
+      };
     }
-    if (sp.to_pole?.id && sp.to_pole.map_latitude && sp.to_pole.map_longitude && !gpsMap[sp.to_pole.id]) {
-      gpsMap[sp.to_pole.id] = { lat: parseFloat(sp.to_pole.map_latitude), lng: parseFloat(sp.to_pole.map_longitude) };
+    if (
+      sp.to_pole?.id &&
+      sp.to_pole.map_latitude &&
+      sp.to_pole.map_longitude &&
+      !gpsMap[sp.to_pole.id]
+    ) {
+      gpsMap[sp.to_pole.id] = {
+        lat: parseFloat(sp.to_pole.map_latitude),
+        lng: parseFloat(sp.to_pole.map_longitude),
+      };
     }
   });
 
@@ -1209,7 +1225,11 @@ export default function PolesScreen() {
                     <View style={styles.heroButtonRow}>
                       <TouchableOpacity
                         activeOpacity={0.9}
-                        onPress={() => { loadPoles(true); loadSpans(); setShowVicinityMap(true); }}
+                        onPress={() => {
+                          loadPoles(true);
+                          loadSpans();
+                          setShowVicinityMap(true);
+                        }}
                         style={styles.vicinityBtn}
                       >
                         <Text style={styles.vicinityBtnText}>
@@ -1482,7 +1502,8 @@ const styles = StyleSheet.create({
   vicinityBtn: {
     flex: 1,
     minHeight: 44,
-    paddingHorizontal: 18,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
@@ -1496,6 +1517,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     letterSpacing: 0.4,
+    textAlign: "center",
+    flexShrink: 1,
   },
 
   stickySearchContainer: {
