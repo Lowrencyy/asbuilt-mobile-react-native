@@ -9,6 +9,7 @@ import {
 import * as FileSystem from "expo-file-system/legacy";
 import { Image as ExpoImage } from "expo-image";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
@@ -34,6 +35,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import { WebView } from "react-native-webview";
 
 type PhotoField = {
@@ -282,90 +284,45 @@ function PhotoTile({
   accentColor,
   onCapture,
   onView,
-  compact = false,
 }: {
   label: string;
-  subtitle?: string;
-  required?: boolean;
   photo: PhotoField;
   accentColor: string;
   onCapture: () => void;
   onView: () => void;
-  compact?: boolean;
 }) {
   return (
-    <View style={[styles.photoTile, compact && styles.photoTileCompact]}>
-      <Text
-        style={[
-          styles.photoTileEyebrow,
-          { textAlign: "center" },
-          photo ? { color: accentColor } : null,
-        ]}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-
-      <Pressable
-        onPress={photo ? onView : onCapture}
-        style={[
-          styles.photoPreviewWrap,
-          compact && styles.photoPreviewWrapCompact,
-        ]}
-      >
+    <Pressable
+      style={[styles.photoTileCard, photo ? { borderColor: accentColor } : {}]}
+      onPress={photo ? onView : onCapture}
+    >
+      <View style={styles.photoTileImgWrap}>
         {photo ? (
           <>
             <ExpoImage
               source={{ uri: photo.uri }}
-              style={[styles.photoThumb, compact && styles.photoThumbCompact]}
+              style={StyleSheet.absoluteFillObject}
               contentFit="cover"
               transition={150}
             />
-            <View style={styles.photoOverlay}>
-              <View style={styles.photoOverlayButton}>
-                <Text style={styles.photoOverlayButtonText}>View</Text>
-              </View>
+            <View style={[styles.photoDoneBadge, { backgroundColor: accentColor }]}>
+              <Text style={styles.photoDoneBadgeText}>✓</Text>
+            </View>
+            <View style={styles.photoViewHint}>
+              <Text style={styles.photoViewHintText}>VIEW</Text>
             </View>
           </>
         ) : (
-          <View
-            style={[styles.photoEmpty, compact && styles.photoEmptyCompact]}
-          >
-            <Text style={styles.photoEmptyIcon}>📷</Text>
-            <Text
-              style={
-                compact ? styles.photoEmptyTitleCompact : styles.photoEmptyTitle
-              }
-            >
-              Tap to capture
-            </Text>
+          <View style={styles.photoTilePlaceholder}>
+            <Text style={styles.photoTilePlaceholderIcon}>📷</Text>
+            <Text style={styles.photoTilePlaceholderText}>Tap</Text>
           </View>
         )}
-      </Pressable>
-
-      {photo ? (
-        <View style={styles.photoSavedRow}>
-          <View style={[styles.statusChip, styles.statusChipSuccess]}>
-            <Text style={[styles.statusChipText, styles.statusChipTextSuccess]}>
-              Photo saved
-            </Text>
-          </View>
-        </View>
-      ) : !compact ? (
-        <View style={styles.photoSavedRow}>
-          <Pressable
-            onPress={onCapture}
-            style={({ pressed }) => [
-              styles.captureMiniBtn,
-              { backgroundColor: accentColor },
-              pressed && styles.pressedDown,
-            ]}
-          >
-            <Text style={styles.captureMiniBtnText}>Capture</Text>
-          </Pressable>
-        </View>
-      ) : null}
-    </View>
+      </View>
+      <Text style={[styles.photoTileLabel, photo ? { color: accentColor } : {}]}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -514,7 +471,7 @@ export default function PoleDetailScreen() {
   }, [slot, pole_id]);
 
   useEffect(() => {
-    cacheSet(`draft_landmark_${pole_id}`, landmark).catch(() => {});
+    if (landmark) cacheSet(`draft_landmark_${pole_id}`, landmark).catch(() => {});
   }, [landmark, pole_id]);
 
   useEffect(() => {
@@ -712,6 +669,26 @@ export default function PoleDetailScreen() {
     return createPhotoField(dest, fileName);
   }
 
+  async function captureFromCamera() {
+    if (!cameraRef.current || !cameraReady) return;
+    setBlurWarning(false);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 1 });
+      if (!photo?.uri) return;
+      const setter = activeCameraTab === "before" ? setPhotoBefore : activeCameraTab === "after" ? setPhotoAfter : setPhotoTag;
+      const file = activeCameraTab === "before" ? F.before : activeCameraTab === "after" ? F.after : F.tag;
+      setter(createPhotoField(photo.uri, file));
+      const saved = await savePhotoDraft(file, photo.uri);
+      setter(saved);
+      const quality = await checkPhotoQuality(saved.fileUri);
+      if (quality === "poor") {
+        setBlurWarning(true);
+      }
+    } catch (e: any) {
+      Alert.alert("Photo Error", e?.message ?? "Failed to capture photo.");
+    }
+  }
+
   async function openCamera(
     setter: (p: PhotoField) => void,
     fileName: string,
@@ -838,6 +815,23 @@ export default function PoleDetailScreen() {
   }
 
   const hasGps = !!(lat && lng);
+  const infoComplete = hasGps && !!slot;
+
+  const [showCameraModal, setShowCameraModal] = useState(false);
+  const [activeCameraTab, setActiveCameraTab] = useState<"before" | "after" | "tag">("before");
+  const cameraRef = useRef<React.ComponentRef<typeof CameraView>>(null);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraZoom, setCameraZoom] = useState(0);
+  const pinchBaseZoom = useRef(0);
+  const pinchGesture = Gesture.Pinch()
+    .runOnJS(true)
+    .onStart(() => { pinchBaseZoom.current = cameraZoom; })
+    .onUpdate((e) => {
+      setCameraZoom(Math.min(1, Math.max(0, pinchBaseZoom.current + (e.scale - 1) * 0.5)));
+    });
+  const [blurWarning, setBlurWarning] = useState(false);
+
   const canSelectPair =
     (hasGps || poleLoading) &&
     !!photoBefore &&
@@ -1131,117 +1125,100 @@ export default function PoleDetailScreen() {
             </Pressable>
           </View>
 
+          {/* Slot */}
+          <View style={styles.sectionCard}>
+            <SectionHeading
+              title="Slot"
+              right={
+                <View style={[styles.sectionPill, slot ? styles.sectionPillSuccess : styles.sectionPillMuted]}>
+                  <Text style={[styles.sectionPillText, slot ? styles.sectionPillTextSuccess : styles.sectionPillTextMuted]}>
+                    {slot ? slot : "Required"}
+                  </Text>
+                </View>
+              }
+            />
+            <View style={styles.slotRowStatic}>
+              {SLOTS.map((s) => (
+                <Pressable
+                  key={s}
+                  style={({ pressed }) => [
+                    styles.slotBtn,
+                    slot === s && { backgroundColor: accentColor, borderColor: accentColor },
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={() => setSlot(s)}
+                >
+                  <Text style={[styles.slotText, slot === s && { color: "#FFFFFF" }]}>{s}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          {/* Landmark (optional) */}
+          <View style={styles.sectionCard}>
+            <SectionHeading
+              title="Landmark"
+              right={
+                <View style={[styles.sectionPill, landmark.trim() ? styles.sectionPillSuccess : styles.sectionPillMuted]}>
+                  <Text style={[styles.sectionPillText, landmark.trim() ? styles.sectionPillTextSuccess : styles.sectionPillTextMuted]}>
+                    {landmark.trim() ? "Filled" : "Optional"}
+                  </Text>
+                </View>
+              }
+            />
+            <TextInput
+              style={styles.textArea}
+              placeholder="e.g. Near Jollibee corner, 3rd pole from left..."
+              placeholderTextColor="#9CA3AF"
+              value={landmark}
+              onChangeText={setLandmark}
+              multiline
+              numberOfLines={3}
+            />
+          </View>
+
+          {/* Photo capture — unlocks after GPS + Slot */}
           <View style={styles.sectionCard}>
             <SectionHeading
               title="Pole Photos"
-              subtitle="Capture clear reference photos before proceeding"
+              subtitle={infoComplete ? "Tap a photo to view or capture" : "Fill GPS & Slot first"}
             />
-
-            <View style={styles.photoRow}>
-              <View style={styles.photoHalf}>
-                <PhotoTile
-                  label="Before"
-                  subtitle="Capture pole condition before teardown"
-                  required
-                  photo={photoBefore}
-                  accentColor={accentColor}
-                  onCapture={() =>
-                    openCamera(setPhotoBefore, F.before, "Before")
-                  }
-                  onView={() =>
-                    openViewer("Before", photoBefore, () =>
-                      openCamera(setPhotoBefore, F.before, "Before"),
-                    )
-                  }
-                  compact
-                />
-              </View>
-
-              <View style={styles.photoHalf}>
-                <PhotoTile
-                  label="After"
-                  subtitle="Capture pole after cable removal"
-                  required
-                  photo={photoAfter}
-                  accentColor={accentColor}
-                  onCapture={() => openCamera(setPhotoAfter, F.after, "After")}
-                  onView={() =>
-                    openViewer("After", photoAfter, () =>
-                      openCamera(setPhotoAfter, F.after, "After"),
-                    )
-                  }
-                  compact
-                />
-              </View>
-            </View>
-
-            <View style={styles.fieldGroup}>
+            <View style={styles.photoTileRow}>
               <PhotoTile
-                label="Pole Tag"
-                subtitle="Capture visible pole identification tag"
-                required
+                label="Before"
+                photo={photoBefore}
+                accentColor={accentColor}
+                onCapture={() => { if (infoComplete) { setActiveCameraTab("before"); setShowCameraModal(true); } }}
+                onView={() => openViewer("Before", photoBefore, () => { setActiveCameraTab("before"); setShowCameraModal(true); })}
+              />
+              <PhotoTile
+                label="After"
+                photo={photoAfter}
+                accentColor={accentColor}
+                onCapture={() => { if (infoComplete) { setActiveCameraTab("after"); setShowCameraModal(true); } }}
+                onView={() => openViewer("After", photoAfter, () => { setActiveCameraTab("after"); setShowCameraModal(true); })}
+              />
+              <PhotoTile
+                label="Tag"
                 photo={photoTag}
                 accentColor={accentColor}
-                onCapture={() => openCamera(setPhotoTag, F.tag, "Pole Tag")}
-                onView={() =>
-                  openViewer("Pole Tag", photoTag, () =>
-                    openCamera(setPhotoTag, F.tag, "Pole Tag"),
-                  )
-                }
+                onCapture={() => { if (infoComplete) { setActiveCameraTab("tag"); setShowCameraModal(true); } }}
+                onView={() => openViewer("Tag", photoTag, () => { setActiveCameraTab("tag"); setShowCameraModal(true); })}
               />
             </View>
-
-            <View style={styles.fieldGroup}>
-              <View style={styles.inlineHeader}>
-                <Text style={styles.fieldLabelInline}>Slot</Text>
-                <Text style={styles.fieldMeta}>
-                  {slot ? `Selected: ${slot}` : "Required"}
-                </Text>
-              </View>
-
-              <View style={styles.slotRowStatic}>
-                {SLOTS.map((s) => (
-                  <Pressable
-                    key={s}
-                    style={({ pressed }) => [
-                      styles.slotBtn,
-                      slot === s && {
-                        backgroundColor: accentColor,
-                        borderColor: accentColor,
-                      },
-                      pressed && styles.pressedDown,
-                    ]}
-                    onPress={() => setSlot(s)}
-                  >
-                    <Text
-                      style={[
-                        styles.slotText,
-                        slot === s && { color: "#FFFFFF" },
-                      ]}
-                    >
-                      {s}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <View style={[styles.fieldGroup, { marginBottom: 0 }]}>
-              <View style={styles.inlineHeader}>
-                <Text style={styles.fieldLabelInline}>Landmark</Text>
-                <Text style={styles.fieldMeta}>Optional</Text>
-              </View>
-
-              <TextInput
-                style={styles.textArea}
-                placeholder="e.g. Near Jollibee corner, 3rd pole from left..."
-                placeholderTextColor="#9CA3AF"
-                value={landmark}
-                onChangeText={setLandmark}
-                multiline
-                numberOfLines={3}
-              />
-            </View>
+            <Pressable
+              style={({ pressed }) => [
+                styles.capturePhotosBtn,
+                { backgroundColor: infoComplete ? accentColor : "#C9CED6" },
+                pressed && infoComplete && styles.pressedDown,
+              ]}
+              onPress={infoComplete ? () => { setActiveCameraTab("before"); setShowCameraModal(true); } : undefined}
+              disabled={!infoComplete}
+            >
+              <Text style={styles.capturePhotosBtnText}>
+                {infoComplete ? "📷  Capture Photos" : "Complete GPS & Slot first"}
+              </Text>
+            </Pressable>
           </View>
         </ScrollView>
 
@@ -1380,6 +1357,147 @@ export default function PoleDetailScreen() {
           domStorageEnabled
           originWhitelist={["*"]}
         />
+
+        {/* ── Tabbed Camera Modal ── */}
+        <Modal
+          visible={showCameraModal}
+          animationType="slide"
+          statusBarTranslucent
+          onRequestClose={() => setShowCameraModal(false)}
+        >
+          <SafeAreaView style={styles.cameraModalRoot} edges={["top", "bottom"]}>
+            {/* Header */}
+            <View style={styles.cameraModalHeader}>
+              <Pressable onPress={() => { setShowCameraModal(false); setCameraReady(false); }} style={styles.cameraModalBackBtn}>
+                <Text style={styles.cameraModalBackText}>‹</Text>
+              </Pressable>
+              <Text style={styles.cameraModalTitle}>Capture Photos</Text>
+              <View style={{ width: 40 }} />
+            </View>
+
+            {/* Tabs */}
+            <View style={styles.cameraTabRow}>
+              {(["before", "after", "tag"] as const).map((tab) => {
+                const done = tab === "before" ? !!photoBefore : tab === "after" ? !!photoAfter : !!photoTag;
+                const label = tab === "tag" ? "POLE TAG" : tab.toUpperCase();
+                return (
+                  <Pressable
+                    key={tab}
+                    style={[styles.cameraTab, activeCameraTab === tab && { borderBottomColor: accentColor, borderBottomWidth: 2 }]}
+                    onPress={() => setActiveCameraTab(tab)}
+                  >
+                    {done && <View style={[styles.cameraTabDot, { backgroundColor: accentColor }]} />}
+                    <Text style={[styles.cameraTabText, activeCameraTab === tab && { color: accentColor }]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {/* Live camera + photo preview */}
+            <View style={styles.cameraPreviewArea}>
+              {(() => {
+                const photo = activeCameraTab === "before" ? photoBefore : activeCameraTab === "after" ? photoAfter : photoTag;
+                const clearPhoto = activeCameraTab === "before" ? () => setPhotoBefore(null) : activeCameraTab === "after" ? () => setPhotoAfter(null) : () => setPhotoTag(null);
+                if (photo && !blurWarning) {
+                  return (
+                    <Pressable style={StyleSheet.absoluteFillObject} onPress={clearPhoto}>
+                      <ExpoImage source={{ uri: photo.uri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
+                      <View style={styles.cameraRetakeBadge}>
+                        <Text style={styles.cameraRetakeText}>Tap to retake</Text>
+                      </View>
+                    </Pressable>
+                  );
+                }
+                if (cameraPermission?.granted) {
+                  return (
+                    <GestureDetector gesture={pinchGesture}>
+                      <View style={StyleSheet.absoluteFillObject}>
+                        <CameraView
+                          ref={cameraRef}
+                          style={StyleSheet.absoluteFillObject}
+                          facing="back"
+                          zoom={cameraZoom}
+                          onCameraReady={() => setCameraReady(true)}
+                        />
+                        {blurWarning && (
+                          <View style={styles.blurWarningOverlay}>
+                            <Text style={styles.blurWarningIcon}>⚠️</Text>
+                            <Text style={styles.blurWarningTitle}>Photo is dark or blurry</Text>
+                            <Text style={styles.blurWarningBody}>Please retake for a clearer image</Text>
+                            <View style={styles.blurWarningActions}>
+                              <Pressable
+                                style={[styles.blurRetakeBtn, { backgroundColor: accentColor }]}
+                                onPress={() => {
+                                  setBlurWarning(false);
+                                  if (activeCameraTab === "before") setPhotoBefore(null);
+                                  else if (activeCameraTab === "after") setPhotoAfter(null);
+                                  else setPhotoTag(null);
+                                }}
+                              >
+                                <Text style={styles.blurRetakeBtnText}>Retake</Text>
+                              </Pressable>
+                              <Pressable style={styles.blurKeepBtn} onPress={() => setBlurWarning(false)}>
+                                <Text style={styles.blurKeepBtnText}>Keep</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
+                      </View>
+                    </GestureDetector>
+                  );
+                }
+                return (
+                  <Pressable style={styles.cameraEmptyPreview} onPress={requestCameraPermission}>
+                    <Text style={styles.cameraEmptyIcon}>📷</Text>
+                    <Text style={styles.cameraEmptyText}>Tap to allow camera access</Text>
+                  </Pressable>
+                );
+              })()}
+            </View>
+
+            {/* Bottom controls */}
+            <View style={styles.cameraControls}>
+              <Pressable style={styles.cameraControlSide} onPress={() => setShowCameraModal(false)}>
+                <Text style={styles.cameraControlSideText}>‹</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.cameraCaptureBtn, { borderColor: accentColor, opacity: cameraReady ? 1 : 0.4 }]}
+                onPress={captureFromCamera}
+                disabled={!cameraReady}
+              >
+                <View style={[styles.cameraCaptureInner, { backgroundColor: accentColor }]} />
+              </Pressable>
+
+              {(() => {
+                const currentPhoto = activeCameraTab === "before" ? photoBefore : activeCameraTab === "after" ? photoAfter : photoTag;
+                const hasPhoto = !!currentPhoto && !blurWarning;
+                const isLastTab = activeCameraTab === "tag";
+                const onConfirm = hasPhoto
+                  ? () => {
+                      if (isLastTab) { setShowCameraModal(false); setCameraReady(false); }
+                      else if (activeCameraTab === "before") setActiveCameraTab("after");
+                      else setActiveCameraTab("tag");
+                    }
+                  : undefined;
+                return (
+                  <Pressable
+                    style={[
+                      styles.cameraControlSide,
+                      hasPhoto
+                        ? { backgroundColor: `${accentColor}20`, borderColor: accentColor }
+                        : { borderColor: "#3A3A3A" },
+                    ]}
+                    onPress={onConfirm}
+                    disabled={!hasPhoto}
+                  >
+                    <Text style={[styles.cameraControlSideText, hasPhoto && { color: accentColor }]}>✓</Text>
+                  </Pressable>
+                );
+              })()}
+            </View>
+          </SafeAreaView>
+        </Modal>
 
       </SafeAreaView>
     </>
@@ -1792,13 +1910,74 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
 
-  photoTile: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    borderWidth: 1,
+  photoTileRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  photoTileCard: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1.5,
     borderColor: "#E8ECF0",
-    padding: 14,
+    overflow: "hidden",
+    backgroundColor: "#FFFFFF",
+  },
+
+  photoTileImgWrap: {
+    aspectRatio: 3 / 4,
+    backgroundColor: "#F3F4F6",
+  },
+
+  photoViewHint: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingVertical: 6,
     alignItems: "center",
+  },
+
+  photoViewHintText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+
+  photoTilePlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderStyle: "dashed",
+    borderColor: "#D1D5DB",
+    margin: 6,
+    borderRadius: 10,
+  },
+
+  photoTilePlaceholderIcon: {
+    fontSize: 22,
+    marginBottom: 4,
+  },
+
+  photoTilePlaceholderText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 0.5,
+  },
+
+  photoTileLabel: {
+    textAlign: "center",
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#9CA3AF",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    paddingVertical: 7,
   },
 
   photoTileCompact: {
@@ -1899,93 +2078,29 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
-  photoPreviewWrap: {
-    borderRadius: 18,
-    overflow: "hidden",
-    backgroundColor: "#F3F4F6",
-    width: "100%",
-  },
 
-  photoPreviewWrapCompact: {
-    borderRadius: 18,
-  },
-
-  photoThumb: {
-    width: "100%",
-    height: 190,
-    backgroundColor: "#E5E7EB",
-  },
-
-  photoThumbCompact: {
-    height: 172,
-  },
-
-  photoOverlay: {
+  photoDoneBadge: {
     position: "absolute",
-    right: 10,
-    bottom: 10,
-  },
-
-  photoOverlayButton: {
-    minWidth: 56,
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 19,
-    backgroundColor: "rgba(17,24,39,0.78)",
+    top: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 4,
   },
 
-  photoOverlayButtonText: {
+  photoDoneBadgeText: {
     color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 0.4,
-    textTransform: "uppercase",
-  },
-
-  photoEmpty: {
-    height: 190,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 14,
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1.2,
-    borderColor: "#D8E0E8",
-    borderStyle: "dashed",
-    borderRadius: 18,
-  },
-
-  photoEmptyCompact: {
-    height: 172,
-  },
-
-  photoEmptyIcon: {
-    fontSize: 28,
-    marginBottom: 10,
-  },
-
-  photoEmptyTitle: {
-    fontSize: 14,
-    fontWeight: "900",
-    color: "#111827",
-    marginBottom: 4,
-    letterSpacing: -0.1,
-  },
-
-  photoEmptyTitleCompact: {
     fontSize: 13,
-    fontWeight: "800",
-    color: "#111827",
+    fontWeight: "900",
+    lineHeight: 16,
   },
 
-  photoEmptySub: {
-    fontSize: 11,
-    color: "#667085",
-    fontWeight: "600",
-    letterSpacing: 0.2,
-    textAlign: "center",
-  },
 
   photoTileBottom: {
     marginTop: 10,
@@ -2164,6 +2279,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 14,
     overflow: "hidden",
+    maxHeight: "85%",
   },
 
   modalHeader: {
@@ -2203,8 +2319,8 @@ const styles = StyleSheet.create({
 
   modalImage: {
     width: "100%",
-    height: 380,
-    borderRadius: 18,
+    aspectRatio: 3 / 4,
+    borderRadius: 14,
     backgroundColor: "#E5E7EB",
   },
 
@@ -2353,6 +2469,299 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#374151",
     letterSpacing: 0.5,
+  },
+
+  photoStatusRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 14,
+  },
+
+  photoStatusChip: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+
+  photoStatusChipText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#9CA3AF",
+    letterSpacing: 0.3,
+  },
+
+  capturePhotosBtn: {
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+
+  capturePhotosBtnText: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: 0.3,
+  },
+
+  cameraModalRoot: {
+    flex: 1,
+    backgroundColor: "#0D0D0D",
+  },
+
+  cameraModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+
+  cameraModalBackBtn: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cameraModalBackText: {
+    fontSize: 28,
+    color: "#FFFFFF",
+    fontWeight: "300",
+  },
+
+  cameraModalTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.3,
+  },
+
+  cameraTabRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderBottomColor: "#2A2A2A",
+  },
+
+  cameraTab: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+
+  cameraTabDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+
+  cameraTabText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#6B7280",
+    letterSpacing: 0.5,
+  },
+
+  cameraPreviewArea: {
+    flex: 1,
+    backgroundColor: "#1A1A1A",
+    borderRadius: 20,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cameraEmptyPreview: {
+    alignItems: "center",
+    gap: 12,
+  },
+
+  cameraEmptyIcon: {
+    fontSize: 48,
+  },
+
+  cameraEmptyText: {
+    fontSize: 14,
+    color: "#6B7280",
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 22,
+  },
+
+  cameraControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 32,
+    paddingBottom: 24,
+    paddingTop: 8,
+  },
+
+  cameraControlSide: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: "#3A3A3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cameraControlSideText: {
+    fontSize: 22,
+    color: "#9CA3AF",
+    fontWeight: "600",
+  },
+
+  cameraCaptureBtn: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cameraCaptureInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+  },
+
+  cameraRetakeBadge: {
+    position: "absolute",
+    bottom: 12,
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+
+  cameraRetakeText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  cameraPreviewRow: {
+    flex: 1,
+    flexDirection: "row",
+    marginHorizontal: 16,
+    marginBottom: 4,
+    gap: 10,
+  },
+
+  // Blur warning overlay inside the camera view
+  blurWarningOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    gap: 8,
+    borderRadius: 20,
+  },
+
+  blurWarningIcon: {
+    fontSize: 36,
+  },
+
+  blurWarningTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    textAlign: "center",
+  },
+
+  blurWarningBody: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.75)",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+
+  blurRetakeBtn: {
+    marginTop: 8,
+    borderRadius: 14,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+  },
+
+  blurRetakeBtnText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  blurWarningActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 8,
+  },
+
+  blurKeepBtn: {
+    borderRadius: 14,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.4)",
+  },
+
+  blurKeepBtnText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  // Zoom controls
+  zoomControls: {
+    width: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+  },
+
+  zoomBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+  },
+
+  zoomBtnText: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "300",
+    lineHeight: 26,
+  },
+
+  zoomTrack: {
+    flex: 1,
+    width: 4,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 2,
+    overflow: "hidden",
+    justifyContent: "flex-end",
+  },
+
+  zoomFill: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 2,
   },
 
 });

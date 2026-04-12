@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Modal } from "react-native";
 import "react-native-reanimated";
 
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import api from "@/lib/api";
 import { startNetSync } from "@/lib/net-sync";
@@ -67,6 +68,7 @@ export default function RootLayout() {
   }, []);
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="onboarding" options={{ animation: "none" }} />
@@ -92,5 +94,6 @@ export default function RootLayout() {
         <MaintenanceScreen message={maintenanceMessage} />
       </Modal>
     </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }
