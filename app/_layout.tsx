@@ -40,7 +40,7 @@ export default function RootLayout() {
     const appStateSub = AppState.addEventListener("change", async (next: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = next;
-      if (prev.match(/inactive|background/) && next === "active") {
+      if (prev === "background" && next === "active") {
         const token = await tokenStore.get();
         if (token) {
           router.replace("/loading" as any);

@@ -7,6 +7,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import api from "./api";
 import { cacheSet } from "./cache";
+import { getDisplayTime } from "./display-time";
 
 const QUEUE_FILE = `${FileSystem.documentDirectory}sync_queue.json`;
 
@@ -44,7 +45,7 @@ export async function queuePush(
   entries.push({
     ...entry,
     id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-    queuedAt: new Date().toISOString(),
+    queuedAt: await getDisplayTime(),
   });
   await writeQueue(entries);
 }

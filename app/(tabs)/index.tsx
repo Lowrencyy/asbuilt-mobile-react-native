@@ -1,8 +1,9 @@
 import api, { assetUrl } from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
-import { prefetchAll } from "@/lib/prefetch";
+import { saveDisplayTime } from "@/lib/display-time";
 import { projectStore, type Project } from "@/lib/store";
 import { processSyncQueue, queueCount } from "@/lib/sync-queue";
+import { processSimpleQueue } from "@/lib/simple-queue";
 import { tokenStore } from "@/lib/token";
 import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
@@ -1589,7 +1590,6 @@ function ProjectCard({ item }: { item: Project }) {
 
         <View style={[styles.cardDivider, { backgroundColor: colors.line }]} />
 
-
         <TouchableOpacity
           activeOpacity={0.9}
           style={styles.cardButton}
@@ -1662,6 +1662,7 @@ export default function Index() {
   const [weatherCache, setWeatherCache] = useState<WeatherCache | null>(null);
   const [userName, setUserName] = useState("User");
   const [assetMaps, setAssetMaps] = useState<AssetMaps | null>(null);
+  const frozenHtmlRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadAssetMaps()
@@ -1693,6 +1694,12 @@ export default function Index() {
       if (ts) setLastSynced(ts);
     });
     queueCount().then(setPendingCount);
+
+    // Snapshot the displayed time on mount, then every minute.
+    // Used by offline submissions so queuedAt reflects what the screen showed.
+    saveDisplayTime();
+    const timeSnapInterval = setInterval(saveDisplayTime, 60_000);
+    return () => clearInterval(timeSnapInterval);
   }, []);
 
   useEffect(() => {
@@ -1721,10 +1728,32 @@ export default function Index() {
     return `Synced ${Math.floor(h / 24)}d ago`;
   }
 
+  async function loadProjects() {
+    const PRIVILEGED = ["admin", "pm", "executive"];
+    const u: any = await tokenStore.getUser();
+    const role = (u?.role ?? "").toLowerCase();
+    const endpoint = PRIVILEGED.includes(role) ? "/projects/all" : "/projects";
+    try {
+      const { data } = await api.get(endpoint);
+      const list: Project[] = Array.isArray(data) ? data : [];
+      cacheSet("projects_list", list);
+      projectStore.set(list);
+      setProjects(list);
+    } catch {
+      // fall back to cache silently
+      const cached = await cacheGet<Project[]>("projects_list");
+      if (cached?.length) {
+        projectStore.set(cached);
+        setProjects(cached);
+      }
+    }
+  }
+
   async function handleSync() {
     if (syncing) return;
     setSyncing(true);
-    await Promise.allSettled([prefetchAll(), processSyncQueue()]);
+    await Promise.allSettled([processSyncQueue(), processSimpleQueue()]);
+    await loadProjects();
     const now = Date.now();
     await cacheSet("last_synced", now);
     setLastSynced(now);
@@ -1732,32 +1761,40 @@ export default function Index() {
     setSyncing(false);
   }
 
+  // Key only changes once: when assets finish loading. Never remounts due to GPS/weather ticks.
   const webViewKey = useMemo(
     () =>
       [
         isAndroid ? "android" : "ios",
-        Object.keys(assetMaps?.bg ?? {}).length,
-        Object.keys(assetMaps?.icons ?? {}).length,
-        coords?.lat?.toFixed(3) ?? "na",
-        coords?.lon?.toFixed(3) ?? "na",
-        weatherCache?.city ?? "none",
+        Object.keys(assetMaps?.bg ?? {}).length > 0 ? "ready" : "init",
       ].join("-"),
-    [assetMaps, coords?.lat, coords?.lon, weatherCache?.city, isAndroid],
+    [assetMaps, isAndroid],
   );
 
-  const webViewHtml = useMemo(
-    () =>
-      buildHtml(
+  const webViewHtml = useMemo(() => {
+    const assetsReady = assetMaps && Object.keys(assetMaps.bg).length > 0;
+    // Freeze HTML on first full build so GPS/weather updates don't reload the WebView
+    if (assetsReady && !frozenHtmlRef.current) {
+      frozenHtmlRef.current = buildHtml(
         coords?.lat ?? null,
         coords?.lon ?? null,
-        assetMaps?.bg ?? {},
-        assetMaps?.icons ?? {},
+        assetMaps.bg,
+        assetMaps.icons,
         weatherCache,
         userName,
         isAndroid,
-      ),
-    [coords?.lat, coords?.lon, weatherCache, userName, assetMaps, isAndroid],
-  );
+      );
+    }
+    return frozenHtmlRef.current ?? buildHtml(
+      coords?.lat ?? null,
+      coords?.lon ?? null,
+      {},
+      {},
+      weatherCache,
+      userName,
+      isAndroid,
+    );
+  }, [assetMaps, coords?.lat, coords?.lon, weatherCache, userName, isAndroid]);
 
   useEffect(() => {
     Animated.parallel([
@@ -1879,6 +1916,7 @@ export default function Index() {
   }, [coords?.lat, coords?.lon]);
 
   useEffect(() => {
+    // Show cached projects immediately while fresh data loads
     if (projectStore.get().length === 0) {
       cacheGet<Project[]>("projects_list").then((cached) => {
         if (cached?.length) {
@@ -1887,25 +1925,7 @@ export default function Index() {
         }
       });
     }
-
-    const PRIVILEGED = ["admin", "pm", "executive"];
-
-    tokenStore.getUser().then((u: any) => {
-      const role = (u?.role ?? "").toLowerCase();
-      const endpoint = PRIVILEGED.includes(role)
-        ? "/projects/all"
-        : "/projects";
-
-      api
-        .get(endpoint)
-        .then(({ data }) => {
-          const list: Project[] = Array.isArray(data) ? data : [];
-          cacheSet("projects_list", list);
-          projectStore.set(list);
-          setProjects(list);
-        })
-        .catch(() => {});
-    });
+    loadProjects();
   }, []);
 
   const titleTranslateY = translateY.interpolate({

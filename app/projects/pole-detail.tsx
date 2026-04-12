@@ -1,5 +1,7 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
+import { getDisplayTime, getPHTNow } from "@/lib/display-time";
+import { simpleQueuePush } from "@/lib/simple-queue";
 import {
   gpsQueueFlush,
   gpsQueueGet,
@@ -351,6 +353,44 @@ window.addEventListener('message',function(e){run(e.data);});
 window.ReactNativeWebView.postMessage(JSON.stringify({ready:1}));
 <\/script></body></html>`;
 
+const STAMP_HTML = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#000"><canvas id="c"></canvas><script>
+function stamp(payload){
+  var data;try{data=JSON.parse(payload);}catch(ex){window.ReactNativeWebView.postMessage(JSON.stringify({error:'parse'}));return;}
+  var img=new Image();
+  img.onload=function(){
+    var c=document.getElementById('c');
+    c.width=img.width;c.height=img.height;
+    var ctx=c.getContext('2d');
+    ctx.drawImage(img,0,0);
+    var lines=data.lines;
+    var fSize=Math.max(22,Math.round(img.width*0.024));
+    var lh=Math.round(fSize*1.6);
+    var pad=Math.round(fSize*0.9);
+    var totalH=lines.length*lh+pad*2;
+    var grad=ctx.createLinearGradient(0,img.height-totalH-30,0,img.height);
+    grad.addColorStop(0,'rgba(0,0,0,0)');
+    grad.addColorStop(0.35,'rgba(0,0,0,0.55)');
+    grad.addColorStop(1,'rgba(0,0,0,0.80)');
+    ctx.fillStyle=grad;
+    ctx.fillRect(0,img.height-totalH-30,img.width,totalH+30);
+    ctx.font='bold '+fSize+'px Arial,sans-serif';
+    ctx.fillStyle='#FFFFFF';
+    ctx.shadowColor='rgba(0,0,0,0.9)';
+    ctx.shadowBlur=5;
+    lines.forEach(function(line,i){
+      ctx.fillText(line,pad,img.height-totalH+pad+(i+1)*lh-6);
+    });
+    var b64=c.toDataURL('image/jpeg',0.92).split(',')[1];
+    window.ReactNativeWebView.postMessage(JSON.stringify({stamped:b64}));
+  };
+  img.onerror=function(){window.ReactNativeWebView.postMessage(JSON.stringify({error:'load'}));};
+  img.src='data:image/jpeg;base64,'+data.b64;
+}
+document.addEventListener('message',function(e){stamp(e.data);});
+window.addEventListener('message',function(e){stamp(e.data);});
+window.ReactNativeWebView.postMessage(JSON.stringify({ready:1}));
+<\/script></body></html>`;
+
 export default function PoleDetailScreen() {
   const {
     pole_id,
@@ -387,9 +427,17 @@ export default function PoleDetailScreen() {
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const [street, setStreet] = useState("");
 
+  const [editedPoleName, setEditedPoleName] = useState(pole_name ?? "");
+  const [editNameModalOpen, setEditNameModalOpen] = useState(false);
+  const [editNameDraft, setEditNameDraft] = useState("");
+  const [savingName, setSavingName] = useState(false);
+
   const [photoBefore, setPhotoBefore] = useState<PhotoField>(null);
   const [photoAfter, setPhotoAfter] = useState<PhotoField>(null);
   const [photoTag, setPhotoTag] = useState<PhotoField>(null);
+  const [qualityBefore, setQualityBefore] = useState<number | null>(null);
+  const [qualityAfter, setQualityAfter] = useState<number | null>(null);
+  const [qualityTag, setQualityTag] = useState<number | null>(null);
 
   const [slot, setSlot] = useState("");
   const [landmark, setLandmark] = useState("");
@@ -405,7 +453,9 @@ export default function PoleDetailScreen() {
   // Work timer
   const timerStartRef = useRef(Date.now());
   const blurCheckRef = useRef<WebView>(null);
-  const blurResolverRef = useRef<((r: "ok" | "poor") => void) | null>(null);
+  const blurResolverRef = useRef<((variance: number) => void) | null>(null);
+  const stampRef = useRef<WebView>(null);
+  const stampResolverRef = useRef<((b64: string | null) => void) | null>(null);
   const [elapsedSecs, setElapsedSecs] = useState(0);
   useEffect(() => {
     const id = setInterval(() => {
@@ -491,11 +541,7 @@ export default function PoleDetailScreen() {
           setGpsDraftState({
             lat: queued.lat,
             lng: queued.lng,
-            capturedAt:
-              queued.capturedAt ||
-              queued.gps_captured_at ||
-              queued.created_at ||
-              "",
+            capturedAt: "",
           });
         }
       })
@@ -573,7 +619,20 @@ export default function PoleDetailScreen() {
       if (pa) setPhotoAfter(pa);
       if (pt) setPhotoTag(pt);
       if (pb || pa || pt) setDraftRestored(true);
+
+      const [qb, qa, qt] = await Promise.all([
+        cacheGet<number>(`pole_quality_before_${pole_id}`),
+        cacheGet<number>(`pole_quality_after_${pole_id}`),
+        cacheGet<number>(`pole_quality_tag_${pole_id}`),
+      ]);
+      if (pb && qb != null) setQualityBefore(qb);
+      if (pa && qa != null) setQualityAfter(qa);
+      if (pt && qt != null) setQualityTag(qt);
     })();
+
+    cacheGet<string>(`draft_pole_name_${pole_id}`)
+      .then((v) => { if (v) setEditedPoleName(v); })
+      .catch(() => {});
   }, [
     pole_id,
     gpsDraftKey,
@@ -608,37 +667,90 @@ export default function PoleDetailScreen() {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.ready || !blurResolverRef.current) return;
-      const isBlurry = typeof data.v === "number" && data.v < 80;
-      blurResolverRef.current(isBlurry ? "poor" : "ok");
+      const variance = typeof data.v === "number" ? data.v : 0;
+      blurResolverRef.current(variance);
       blurResolverRef.current = null;
     } catch {}
   }
 
-  async function checkPhotoQuality(fileUri: string): Promise<"ok" | "poor"> {
+  function handleStampMessage(event: { nativeEvent: { data: string } }) {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.ready || !stampResolverRef.current) return;
+      stampResolverRef.current(data.stamped ?? null);
+      stampResolverRef.current = null;
+    } catch {}
+  }
+
+  function buildStampLines(tab: "before" | "after" | "tag"): string[] {
+    const name = editedPoleName || pole_name || pole_code || "";
+    const tabLabel = tab === "before" ? "BEFORE" : tab === "after" ? "AFTER" : "POLE TAG";
+    const gpsText = lat && lng ? `${lat.toFixed(6)}, ${lng.toFixed(6)}` : "GPS not captured";
+    const time = getPHTNow().replace("T", " ").substring(0, 19) + " PHT";
+    return [
+      `${name}  [${tabLabel}]`,
+      `GPS: ${gpsText}`,
+      `${time}  \u2022  ${project_name || ""}`,
+    ];
+  }
+
+  async function stampPhoto(uri: string, lines: string[]): Promise<string> {
+    try {
+      const b64 = await FileSystem.readAsStringAsync(uri, { encoding: "base64" as any });
+      const payload = JSON.stringify({ b64, lines });
+      return new Promise<string>((resolve) => {
+        const timer = setTimeout(() => {
+          stampResolverRef.current = null;
+          resolve(uri);
+        }, 15000);
+        stampResolverRef.current = (result: string | null) => {
+          clearTimeout(timer);
+          if (!result) { resolve(uri); return; }
+          const tmp = `${FileSystem.cacheDirectory}stamp_${Date.now()}.jpg`;
+          FileSystem.writeAsStringAsync(tmp, result, { encoding: "base64" as any })
+            .then(() => resolve(tmp))
+            .catch(() => resolve(uri));
+        };
+        stampRef.current?.injectJavaScript(
+          `(function(){document.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(payload)}}));})();true;`
+        );
+      });
+    } catch {
+      return uri;
+    }
+  }
+
+  function varianceToPercent(v: number): number {
+    // Log scale: v=80 (blur threshold) ≈ 40%, v=500 ≈ 75%, v=2000 = 100%
+    return Math.min(100, Math.max(0, Math.round(Math.log(v + 1) / Math.log(2001) * 100)));
+  }
+
+  async function checkPhotoQuality(fileUri: string): Promise<number> {
     try {
       const b64 = await FileSystem.readAsStringAsync(fileUri, {
         encoding: "base64" as any,
       });
-      return new Promise<"ok" | "poor">((resolve) => {
+      return new Promise<number>((resolve) => {
         blurResolverRef.current = resolve;
         blurCheckRef.current?.injectJavaScript(
           `(function(){document.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(b64)}}));})();true;`
         );
         setTimeout(() => {
           if (blurResolverRef.current) {
-            blurResolverRef.current("ok");
+            blurResolverRef.current(400); // assume max on timeout
             blurResolverRef.current = null;
           }
         }, 8000);
       });
     } catch {
-      return "ok";
+      return 0;
     }
   }
 
   async function compressPhoto(uri: string): Promise<string> {
     try {
       const ctx = ImageManipulator.manipulate(uri);
+      ctx.resize({ width: 1080 });
       const img = await ctx.renderAsync();
       const result = await img.saveAsync({
         compress: 0.88,
@@ -653,10 +765,12 @@ export default function PoleDetailScreen() {
   async function savePhotoDraft(
     fileName: string,
     uri: string,
+    stampLines?: string[],
   ): Promise<NonNullable<PhotoField>> {
     await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
 
     const compressed = await compressPhoto(uri);
+    const stamped = stampLines?.length ? await stampPhoto(compressed, stampLines) : compressed;
     const dest = draftDir + fileName;
     const existing = await FileSystem.getInfoAsync(dest);
 
@@ -664,7 +778,7 @@ export default function PoleDetailScreen() {
       await FileSystem.deleteAsync(dest, { idempotent: true });
     }
 
-    await FileSystem.copyAsync({ from: compressed, to: dest });
+    await FileSystem.copyAsync({ from: stamped, to: dest });
 
     return createPhotoField(dest, fileName);
   }
@@ -673,15 +787,20 @@ export default function PoleDetailScreen() {
     if (!cameraRef.current || !cameraReady) return;
     setBlurWarning(false);
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 1 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 1, skipProcessing: false });
       if (!photo?.uri) return;
       const setter = activeCameraTab === "before" ? setPhotoBefore : activeCameraTab === "after" ? setPhotoAfter : setPhotoTag;
+      const qualitySetter = activeCameraTab === "before" ? setQualityBefore : activeCameraTab === "after" ? setQualityAfter : setQualityTag;
       const file = activeCameraTab === "before" ? F.before : activeCameraTab === "after" ? F.after : F.tag;
       setter(createPhotoField(photo.uri, file));
-      const saved = await savePhotoDraft(file, photo.uri);
+      const saved = await savePhotoDraft(file, photo.uri, buildStampLines(activeCameraTab));
       setter(saved);
-      const quality = await checkPhotoQuality(saved.fileUri);
-      if (quality === "poor") {
+      const variance = await checkPhotoQuality(saved.fileUri);
+      const pct = varianceToPercent(variance);
+      qualitySetter(pct);
+      const qualityKey = activeCameraTab === "before" ? `pole_quality_before_${pole_id}` : activeCameraTab === "after" ? `pole_quality_after_${pole_id}` : `pole_quality_tag_${pole_id}`;
+      cacheSet(qualityKey, pct).catch(() => {});
+      if (variance < 80) {
         setBlurWarning(true);
       }
     } catch (e: any) {
@@ -726,7 +845,7 @@ export default function PoleDetailScreen() {
       }
 
       const quality = await checkPhotoQuality(saved.fileUri);
-      if (quality === "poor") {
+      if (quality < 80) {
         setQualityRetakeFn(() => () => openCamera(setter, fileName, modalLabel));
         setQualityAlertOpen(true);
         return;
@@ -776,7 +895,7 @@ export default function PoleDetailScreen() {
         return;
       }
 
-      const capturedAt = new Date().toISOString();
+      const capturedAt = await getDisplayTime();
       const draft: GpsDraft = {
         lat: coords.latitude,
         lng: coords.longitude,
@@ -799,7 +918,6 @@ export default function PoleDetailScreen() {
           pole_id,
           draft.lat,
           draft.lng,
-          draft.capturedAt as any,
         ).catch(async () => {
           await cacheSet(`gps_queue_fallback_${pole_id}`, draft).catch(
             () => {},
@@ -853,6 +971,32 @@ export default function PoleDetailScreen() {
           ? `Accuracy: ${gpsAccuracy}m • Tap to capture`
           : `Accuracy: ${gpsAccuracy}m • Weak signal — tap to capture anyway`;
 
+  async function handleSavePoleNameEdit() {
+    const trimmed = editNameDraft.trim();
+    if (!trimmed) return;
+    setSavingName(true);
+    setEditedPoleName(trimmed);
+    await cacheSet(`draft_pole_name_${pole_id}`, trimmed).catch(() => {});
+
+    // Try to save to backend immediately; queue if offline
+    try {
+      await api.put(`/poles/${pole_id}`, { pole_name: trimmed });
+    } catch (e: any) {
+      const status = e?.response?.status;
+      if (!status) {
+        // Network error — queue for later
+        await simpleQueuePush({
+          method: "put",
+          url: `/poles/${pole_id}`,
+          body: { pole_name: trimmed },
+        }).catch(() => {});
+      }
+    }
+
+    setSavingName(false);
+    setEditNameModalOpen(false);
+  }
+
   function goToDestination(span: Span) {
     const isReversed = span.to_pole.pole_code === pole_code;
     const actualToId = isReversed
@@ -869,7 +1013,7 @@ export default function PoleDetailScreen() {
       pathname: "/teardown/destination-pole" as any,
       params: {
         pole_code,
-        pole_name,
+        pole_name: editedPoleName || pole_name,
         node_id,
         project_id,
         project_name,
@@ -907,7 +1051,7 @@ export default function PoleDetailScreen() {
         params: {
           pole_id,
           pole_code,
-          pole_name,
+          pole_name: editedPoleName || pole_name,
           node_id,
           project_id,
           project_name,
@@ -962,9 +1106,18 @@ export default function PoleDetailScreen() {
                 </View>
               </View>
 
-              <Text style={styles.heroTitle} numberOfLines={2}>
-                {pole_name || "Pole"}
-              </Text>
+              <Pressable
+                onPress={() => {
+                  setEditNameDraft(editedPoleName);
+                  setEditNameModalOpen(true);
+                }}
+                style={styles.heroTitleRow}
+              >
+                <Text style={[styles.heroTitle, { marginTop: 0, flexShrink: 1 }]} numberOfLines={2}>
+                  {editedPoleName || "Pole"}
+                </Text>
+                <Text style={styles.heroEditIcon}>✎</Text>
+              </Pressable>
 
               <Text style={styles.heroMeta} numberOfLines={1}>
                 {project_name || "—"} • ID {pole_id || "—"}
@@ -1347,12 +1500,74 @@ export default function PoleDetailScreen() {
           </View>
         </Modal>
 
+        {/* ── Edit Pole Name Modal ── */}
+        <Modal
+          visible={editNameModalOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setEditNameModalOpen(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.editNameCard}>
+              <Text style={styles.editNameTitle}>Edit Pole Name</Text>
+              <Text style={styles.editNameSub}>
+                Changes will be saved to the server immediately.
+              </Text>
+              <TextInput
+                style={styles.editNameInput}
+                value={editNameDraft}
+                onChangeText={setEditNameDraft}
+                placeholder="Enter pole name"
+                placeholderTextColor="#9CA3AF"
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (!savingName && editNameDraft.trim()) handleSavePoleNameEdit();
+                }}
+                selectionColor={accentColor}
+              />
+              <View style={styles.editNameActions}>
+                <Pressable
+                  style={({ pressed }) => [styles.editNameCancelBtn, pressed && styles.pressedDown]}
+                  onPress={() => setEditNameModalOpen(false)}
+                  disabled={savingName}
+                >
+                  <Text style={styles.editNameCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.editNameSaveBtn,
+                    { backgroundColor: accentColor },
+                    (savingName || !editNameDraft.trim()) && { opacity: 0.5 },
+                    pressed && styles.pressedDown,
+                  ]}
+                  onPress={handleSavePoleNameEdit}
+                  disabled={savingName || !editNameDraft.trim()}
+                >
+                  <Text style={styles.editNameSaveText}>Save</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {/* Hidden WebView for blur detection */}
         <WebView
           ref={blurCheckRef}
           style={{ position: "absolute", width: 0, height: 0, opacity: 0 }}
           source={{ html: BLUR_DETECT_HTML }}
           onMessage={handleBlurMessage}
+          javaScriptEnabled
+          domStorageEnabled
+          originWhitelist={["*"]}
+        />
+
+        {/* Hidden WebView for photo stamping */}
+        <WebView
+          ref={stampRef}
+          style={{ position: "absolute", width: 0, height: 0, opacity: 0 }}
+          source={{ html: STAMP_HTML }}
+          onMessage={handleStampMessage}
           javaScriptEnabled
           domStorageEnabled
           originWhitelist={["*"]}
@@ -1397,13 +1612,31 @@ export default function PoleDetailScreen() {
             <View style={styles.cameraPreviewArea}>
               {(() => {
                 const photo = activeCameraTab === "before" ? photoBefore : activeCameraTab === "after" ? photoAfter : photoTag;
-                const clearPhoto = activeCameraTab === "before" ? () => setPhotoBefore(null) : activeCameraTab === "after" ? () => setPhotoAfter(null) : () => setPhotoTag(null);
+                const photoQuality = activeCameraTab === "before" ? qualityBefore : activeCameraTab === "after" ? qualityAfter : qualityTag;
+                const clearPhoto = activeCameraTab === "before"
+                  ? () => { setPhotoBefore(null); setQualityBefore(null); cacheSet(`pole_quality_before_${pole_id}`, null).catch(() => {}); }
+                  : activeCameraTab === "after"
+                  ? () => { setPhotoAfter(null); setQualityAfter(null); cacheSet(`pole_quality_after_${pole_id}`, null).catch(() => {}); }
+                  : () => { setPhotoTag(null); setQualityTag(null); cacheSet(`pole_quality_tag_${pole_id}`, null).catch(() => {}); };
                 if (photo && !blurWarning) {
+                  const badgeColor = photoQuality === null ? "#6b7280"
+                    : photoQuality >= 80 ? "#22c55e"
+                    : photoQuality >= 65 ? "#84cc16"
+                    : photoQuality >= 50 ? "#f97316"
+                    : "#ef4444";
                   return (
                     <Pressable style={StyleSheet.absoluteFillObject} onPress={clearPhoto}>
                       <ExpoImage source={{ uri: photo.uri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
                       <View style={styles.cameraRetakeBadge}>
                         <Text style={styles.cameraRetakeText}>Tap to retake</Text>
+                      </View>
+                      <View style={styles.photoQualityBadgeWrap}>
+                        <View style={[styles.photoQualityBadge, { backgroundColor: badgeColor }]}>
+                          <Text style={styles.photoQualityBadgeLabel}>HD QUALITY</Text>
+                          <Text style={styles.photoQualityBadgePercent}>
+                            {photoQuality !== null ? `${photoQuality}%` : "—"}
+                          </Text>
+                        </View>
                       </View>
                     </Pressable>
                   );
@@ -1429,9 +1662,9 @@ export default function PoleDetailScreen() {
                                 style={[styles.blurRetakeBtn, { backgroundColor: accentColor }]}
                                 onPress={() => {
                                   setBlurWarning(false);
-                                  if (activeCameraTab === "before") setPhotoBefore(null);
-                                  else if (activeCameraTab === "after") setPhotoAfter(null);
-                                  else setPhotoTag(null);
+                                  if (activeCameraTab === "before") { setPhotoBefore(null); setQualityBefore(null); cacheSet(`pole_quality_before_${pole_id}`, null).catch(() => {}); }
+                                  else if (activeCameraTab === "after") { setPhotoAfter(null); setQualityAfter(null); cacheSet(`pole_quality_after_${pole_id}`, null).catch(() => {}); }
+                                  else { setPhotoTag(null); setQualityTag(null); cacheSet(`pole_quality_tag_${pole_id}`, null).catch(() => {}); }
                                 }}
                               >
                                 <Text style={styles.blurRetakeBtnText}>Retake</Text>
@@ -1611,6 +1844,86 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: "#FFFFFF",
     letterSpacing: -0.6,
+  },
+
+  heroTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 18,
+  },
+
+  heroEditIcon: {
+    fontSize: 15,
+    color: "rgba(255,255,255,0.45)",
+    marginTop: 4,
+  },
+
+  editNameCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 24,
+    marginHorizontal: 24,
+    gap: 14,
+  },
+
+  editNameTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+    letterSpacing: -0.3,
+  },
+
+  editNameSub: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 18,
+    marginTop: -6,
+  },
+
+  editNameInput: {
+    borderWidth: 1.5,
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
+    backgroundColor: "#F9FAFB",
+  },
+
+  editNameActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+
+  editNameCancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: "center",
+    backgroundColor: "#F3F4F6",
+  },
+
+  editNameCancelText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#374151",
+  },
+
+  editNameSaveBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+
+  editNameSaveText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 
   heroMeta: {
@@ -2720,6 +3033,43 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "700",
+  },
+
+  photoQualityBadgeWrap: {
+    position: "absolute",
+    top: 20,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+
+  photoQualityBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.45,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+
+  photoQualityBadgeLabel: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 7,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    marginBottom: 1,
+  },
+
+  photoQualityBadgePercent: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: -0.5,
+    lineHeight: 18,
   },
 
   // Zoom controls

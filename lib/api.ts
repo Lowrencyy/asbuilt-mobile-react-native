@@ -1,8 +1,8 @@
 import { tokenStore } from "@/lib/token";
 
-const BASE_URL = "https://darkseagreen-meerkat-296232.hostingersite.com/api/v1";
+const BASE_URL = "https://disguisedly-enarthrodial-kristi.ngrok-free.dev/api/v1";
 
-const ASSET_BASE = "https://darkseagreen-meerkat-296232.hostingersite.com";
+const ASSET_BASE = "https://disguisedly-enarthrodial-kristi.ngrok-free.dev";
 
 /** Converts a stored path like "project-logos/abc.png" to a full URL */
 export function assetUrl(path: string | null | undefined): string | null {
@@ -21,6 +21,7 @@ async function buildHeaders(
   return {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
     Accept: "application/json",
+    "ngrok-skip-browser-warning": "true",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   };

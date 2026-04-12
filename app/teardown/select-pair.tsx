@@ -13,6 +13,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import Animated, {
@@ -112,25 +113,10 @@ html,body,#map{
   border-radius:999px;
   white-space:nowrap;
 }
-.legend{
-  position:fixed;
-  bottom:14px;
-  left:50%;
-  transform:translateX(-50%);
-  z-index:9999;
-  background:rgba(15,23,42,0.88);
-  color:#fff;
-  font-size:11px;
-  font-weight:700;
-  padding:8px 12px;
-  border-radius:999px;
-  box-shadow:0 4px 16px rgba(0,0,0,.22);
-}
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div class="legend">Span vicinity preview</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 var map=L.map('map',{
@@ -168,14 +154,6 @@ L.polyline([[${fromLat},${fromLng}],[${toLat},${toLng}]],{
   dashArray:'8,5'
 }).addTo(map);
 
-L.marker([${midLat},${midLng}], {
-  icon: L.divIcon({
-    className:'',
-    html:'<div style="background:#fff;color:#111827;font-size:11px;font-weight:900;padding:4px 10px;border-radius:999px;box-shadow:0 2px 10px rgba(0,0,0,.18);border:1px solid ${accent}44;">${fromLabel} → ${toLabel}</div>',
-    iconSize:[120,24],
-    iconAnchor:[60,12]
-  })
-}).addTo(map);
 
 var bounds=L.latLngBounds([[${fromLat},${fromLng}],[${toLat},${toLng}]]);
 map.fitBounds(bounds,{padding:[48,48],maxZoom:18});
@@ -258,28 +236,20 @@ function RouteMini({
     <View style={styles.routeMini}>
       <View style={styles.routeMiniPole}>
         <View style={[styles.routeMiniDot, { backgroundColor: accentColor }]} />
-        <Text style={styles.routeMiniCode} numberOfLines={1}>
+        <Text style={styles.routeMiniCode} numberOfLines={1} ellipsizeMode="tail">
           {fromCode}
         </Text>
       </View>
 
       <View style={styles.routeMiniCenter}>
-        <View
-          style={[styles.routeMiniLine, { borderColor: `${accentColor}66` }]}
-        />
-        <MaterialCommunityIcons
-          name="transmission-tower"
-          size={14}
-          color={accentColor}
-        />
-        <View
-          style={[styles.routeMiniLine, { borderColor: `${accentColor}66` }]}
-        />
+        <View style={[styles.routeMiniLine, { borderColor: `${accentColor}66` }]} />
+        <MaterialCommunityIcons name="transmission-tower" size={11} color={accentColor} />
+        <View style={[styles.routeMiniLine, { borderColor: `${accentColor}66` }]} />
       </View>
 
-      <View style={styles.routeMiniPole}>
+      <View style={[styles.routeMiniPole, { justifyContent: "flex-end" }]}>
         <View style={[styles.routeMiniDot, { backgroundColor: "#6366F1" }]} />
-        <Text style={styles.routeMiniCode} numberOfLines={1}>
+        <Text style={styles.routeMiniCode} numberOfLines={1} ellipsizeMode="tail">
           {toCode}
         </Text>
       </View>
@@ -501,6 +471,12 @@ export default function SelectPairScreen() {
   const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
   const [showVicinityModal, setShowVicinityModal] = useState(false);
 
+  // Report new intermediate pole
+  const [showNewPoleModal, setShowNewPoleModal] = useState(false);
+  const [newPoleName, setNewPoleName] = useState("");
+  const [newPoleSpanId, setNewPoleSpanId] = useState<number | null>(null);
+  const [submittingNewPole, setSubmittingNewPole] = useState(false);
+
   useEffect(() => {
     if (!pole_code || !node_id) return;
 
@@ -704,6 +680,44 @@ export default function SelectPairScreen() {
   function openVicinity(span: Span) {
     setSelectedSpan(span);
     setShowVicinityModal(true);
+  }
+
+  function openNewPoleModal(span: Span) {
+    setNewPoleSpanId(span.id);
+    setNewPoleName("");
+    setShowNewPoleModal(true);
+  }
+
+  async function handleReportNewPole() {
+    const name = newPoleName.trim();
+    if (!name || !newPoleSpanId) return;
+    setSubmittingNewPole(true);
+    try {
+      const res = await api.post(`/pole-spans/${newPoleSpanId}/split`, {
+        pole_name: name,
+      });
+      const { span_a, span_b, new_pole } = (res as any).data ?? res;
+      setShowNewPoleModal(false);
+      setNewPoleName("");
+      setNewPoleSpanId(null);
+      // Refresh spans list — replace the superseded span with the two new ones
+      setSpans((prev) => {
+        const without = prev.filter((s) => s.id !== newPoleSpanId);
+        const built: Span[] = [];
+        if (span_a) built.push(span_a);
+        if (span_b) built.push(span_b);
+        return [...without, ...built];
+      });
+      Alert.alert(
+        "New Pole Added",
+        `"${new_pole?.pole_name ?? name}" has been inserted.\nTwo new spans created:\n• ${span_a?.from_pole?.pole_code} → ${span_a?.to_pole?.pole_code}\n• ${span_b?.from_pole?.pole_code} → ${span_b?.to_pole?.pole_code}`,
+      );
+    } catch (e: any) {
+      const msg = e?.response?.data?.message ?? e?.message ?? "Unknown error";
+      Alert.alert("Failed", msg);
+    } finally {
+      setSubmittingNewPole(false);
+    }
   }
 
   const selectedDisplayPole = useMemo(() => {
@@ -911,20 +925,32 @@ export default function SelectPairScreen() {
                   const displayPole = getDisplayPole(item);
 
                   return (
-                    <SpanCard
-                      key={item.id}
-                      fromCode={pole_code || ""}
-                      poleCode={displayPole.pole_code}
-                      poleName={displayPole.pole_name ?? displayPole.pole_code}
-                      spanCode={item.pole_span_code ?? ""}
-                      expectedCable={item.expected_cable}
-                      lengthMeters={item.length_meters}
-                      runs={item.runs}
-                      accentColor={accentColor}
-                      index={index}
-                      onCardPress={() => navigateToKabila(item)}
-                      onVicinityPress={() => openVicinity(item)}
-                    />
+                    <View key={item.id}>
+                      <SpanCard
+                        fromCode={pole_code || ""}
+                        poleCode={displayPole.pole_code}
+                        poleName={displayPole.pole_name ?? displayPole.pole_code}
+                        spanCode={item.pole_span_code ?? ""}
+                        expectedCable={item.expected_cable}
+                        lengthMeters={item.length_meters}
+                        runs={item.runs}
+                        accentColor={accentColor}
+                        index={index}
+                        onCardPress={() => navigateToKabila(item)}
+                        onVicinityPress={() => openVicinity(item)}
+                      />
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.newPoleBtn,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                        onPress={() => openNewPoleModal(item)}
+                      >
+                        <Text style={styles.newPoleBtnText}>
+                          + May bagong poste dito?
+                        </Text>
+                      </Pressable>
+                    </View>
                   );
                 })}
               </View>
@@ -997,67 +1023,26 @@ export default function SelectPairScreen() {
 
                     <View style={styles.routeRow}>
                       <View style={styles.routePoleBlock}>
-                        <View
-                          style={[
-                            styles.routePoleDot,
-                            { backgroundColor: accentColor },
-                          ]}
-                        />
-                        <Text
-                          style={[styles.routePoleCode, { color: accentColor }]}
-                        >
-                          {pole_code || "FROM"}
-                        </Text>
-                        <Text style={styles.routePoleName} numberOfLines={2}>
-                          {pole_name || pole_code || "Starting Pole"}
+                        <View style={[styles.routePoleDot, { backgroundColor: accentColor }]} />
+                        <Text style={[styles.routePoleCode, { color: accentColor }]} numberOfLines={1} ellipsizeMode="tail">
+                          {pole_name || pole_code || "FROM"}
                         </Text>
                       </View>
 
                       <View style={styles.routeCenter}>
-                        <View
-                          style={[
-                            styles.routeLine,
-                            { borderColor: `${accentColor}55` },
-                          ]}
-                        />
-                        <View
-                          style={[
-                            styles.routeDistanceBadge,
-                            { backgroundColor: `${accentColor}12` },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.routeDistanceText,
-                              { color: accentColor },
-                            ]}
-                          >
+                        <View style={[styles.routeLine, { borderColor: `${accentColor}55` }]} />
+                        <View style={[styles.routeDistanceBadge, { backgroundColor: `${accentColor}12` }]}>
+                          <Text style={[styles.routeDistanceText, { color: accentColor }]}>
                             {selectedSpan.length_meters}m
                           </Text>
                         </View>
-                        <View
-                          style={[
-                            styles.routeLine,
-                            { borderColor: `${accentColor}55` },
-                          ]}
-                        />
+                        <View style={[styles.routeLine, { borderColor: `${accentColor}55` }]} />
                       </View>
 
-                      <View style={styles.routePoleBlock}>
-                        <View
-                          style={[
-                            styles.routePoleDot,
-                            { backgroundColor: "#6366F1" },
-                          ]}
-                        />
-                        <Text
-                          style={[styles.routePoleCode, { color: "#6366F1" }]}
-                        >
-                          {selectedDisplayPole.pole_code}
-                        </Text>
-                        <Text style={styles.routePoleName} numberOfLines={2}>
-                          {selectedDisplayPole.pole_name ??
-                            selectedDisplayPole.pole_code}
+                      <View style={[styles.routePoleBlock, { justifyContent: "flex-end" }]}>
+                        <View style={[styles.routePoleDot, { backgroundColor: "#6366F1" }]} />
+                        <Text style={[styles.routePoleCode, { color: "#6366F1" }]} numberOfLines={1} ellipsizeMode="tail">
+                          {selectedDisplayPole.pole_name ?? selectedDisplayPole.pole_code}
                         </Text>
                       </View>
                     </View>
@@ -1110,6 +1095,63 @@ export default function SelectPairScreen() {
                 </>
               ) : null}
             </ScrollView>
+          </View>
+        </Modal>
+
+        {/* ── Report New Intermediate Pole Modal ── */}
+        <Modal
+          visible={showNewPoleModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowNewPoleModal(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center" }}>
+            <View style={styles.newPoleCard}>
+              <Text style={styles.newPoleTitle}>May Bagong Poste?</Text>
+              <Text style={styles.newPoleSub}>
+                Mag-type ng pangalan ng bagong poste. Mahahati ang span na ito:{"\n"}
+                <Text style={{ fontWeight: "700", color: "#111827" }}>
+                  Pole 1 → Bagong Poste → Pole 2
+                </Text>
+              </Text>
+              <TextInput
+                style={styles.newPoleInput}
+                value={newPoleName}
+                onChangeText={setNewPoleName}
+                placeholder="e.g. P-015, NPT-003"
+                placeholderTextColor="#9CA3AF"
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (!submittingNewPole && newPoleName.trim()) handleReportNewPole();
+                }}
+                selectionColor={accentColor}
+              />
+              <View style={styles.newPoleActions}>
+                <Pressable
+                  style={({ pressed }) => [styles.newPoleCancelBtn, pressed && { opacity: 0.7 }]}
+                  onPress={() => setShowNewPoleModal(false)}
+                  disabled={submittingNewPole}
+                >
+                  <Text style={styles.newPoleCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.newPoleSaveBtn,
+                    { backgroundColor: accentColor },
+                    (submittingNewPole || !newPoleName.trim()) && { opacity: 0.5 },
+                    pressed && { opacity: 0.7 },
+                  ]}
+                  onPress={handleReportNewPole}
+                  disabled={submittingNewPole || !newPoleName.trim()}
+                >
+                  {submittingNewPole
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Text style={styles.newPoleSaveText}>Isumite</Text>
+                  }
+                </Pressable>
+              </View>
+            </View>
           </View>
         </Modal>
       </SafeAreaView>
@@ -1424,40 +1466,44 @@ const styles = StyleSheet.create({
   routeMini: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 16,
-    marginBottom: 14,
+    marginTop: 10,
+    marginBottom: 10,
+    gap: 4,
   },
 
   routeMiniPole: {
     flex: 1,
+    flexDirection: "row",
     alignItems: "center",
+    gap: 4,
+    minWidth: 0,
   },
 
   routeMiniDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 10,
-    marginBottom: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    flexShrink: 0,
   },
 
   routeMiniCode: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#667085",
-    textAlign: "center",
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    flexShrink: 1,
   },
 
   routeMiniCenter: {
-    flex: 1.2,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 6,
+    gap: 3,
+    paddingHorizontal: 2,
+    flexShrink: 0,
   },
 
   routeMiniLine: {
-    flex: 1,
-    borderTopWidth: 2,
+    width: 14,
+    borderTopWidth: 1.5,
     borderStyle: "dashed",
   },
 
@@ -1646,22 +1692,22 @@ const styles = StyleSheet.create({
 
   routePreviewCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 28,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: "#E9EDF2",
-    padding: 18,
+    padding: 12,
     shadowColor: "#101828",
     shadowOpacity: 0.04,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
 
   cardTitle: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: "900",
     color: "#111827",
-    marginBottom: 4,
+    marginBottom: 2,
   },
 
   cardSub: {
@@ -1673,56 +1719,59 @@ const styles = StyleSheet.create({
   routeRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 14,
+    marginTop: 8,
+    gap: 4,
   },
 
   routePoleBlock: {
     flex: 1,
+    flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 5,
+    minWidth: 0,
   },
 
   routePoleDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginBottom: 2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    flexShrink: 0,
   },
 
   routePoleCode: {
-    fontSize: 15,
+    fontSize: 12,
     fontWeight: "900",
-    textAlign: "center",
+    flexShrink: 1,
   },
 
   routePoleName: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "600",
     color: "#98A2B3",
-    textAlign: "center",
+    flexShrink: 1,
   },
 
   routeCenter: {
-    flex: 1.4,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
+    flexShrink: 0,
   },
 
   routeLine: {
-    flex: 1,
-    borderTopWidth: 2,
+    width: 16,
+    borderTopWidth: 1.5,
     borderStyle: "dashed",
   },
 
   routeDistanceBadge: {
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
   },
 
   routeDistanceText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
   },
 
@@ -1792,5 +1841,92 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
     letterSpacing: 0.2,
+  },
+
+  newPoleBtn: {
+    marginHorizontal: 16,
+    marginTop: -4,
+    marginBottom: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderStyle: "dashed",
+    alignItems: "center",
+    backgroundColor: "#FAFAFA",
+  },
+
+  newPoleBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#6B7280",
+  },
+
+  newPoleCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 24,
+    marginHorizontal: 24,
+    gap: 14,
+  },
+
+  newPoleTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+    letterSpacing: -0.3,
+  },
+
+  newPoleSub: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 18,
+    marginTop: -6,
+  },
+
+  newPoleInput: {
+    borderWidth: 1.5,
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
+    backgroundColor: "#F9FAFB",
+  },
+
+  newPoleActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+
+  newPoleCancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: "center",
+    backgroundColor: "#F3F4F6",
+  },
+
+  newPoleCancelText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#374151",
+  },
+
+  newPoleSaveBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+
+  newPoleSaveText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 });

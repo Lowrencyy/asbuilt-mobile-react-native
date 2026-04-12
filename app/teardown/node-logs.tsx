@@ -1,5 +1,6 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
+import { getPHTToday } from "@/lib/display-time";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   Stack,
@@ -712,7 +713,7 @@ export default function NodeLogsScreen() {
     setSubmitting(true);
 
     try {
-      const today = new Date().toISOString().split("T")[0];
+      const today = getPHTToday();
 
       const { data: fill } = await api.get(
         `/teardown-submissions/autofill?node_id=${nodeDbId}&date=${today}`,

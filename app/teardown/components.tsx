@@ -1,5 +1,6 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
+import { getDisplayTime, getPHTNow } from "@/lib/display-time";
 import { queuePush } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
 import * as FileSystem from "expo-file-system/legacy";
@@ -213,10 +214,6 @@ function CounterCard({
   return (
     <View style={styles.counterCard}>
       <Text style={styles.counterLabel}>{label}</Text>
-      <Text style={[styles.counterExpected, matched && { color: "#166534" }]}>
-        exp. {expected}
-      </Text>
-
       <View style={styles.counterControls}>
         <Pressable
           onPress={() => onChange(Math.max(0, value - 1))}
@@ -409,7 +406,7 @@ export default function TeardownComponentsScreen() {
   const declaredRuns = Number(params.declared_runs) || 0;
   const lengthMeters = Number(params.length_meters) || 0;
 
-  const startedAt = useRef(new Date().toISOString());
+  const startedAt = useRef(getPHTNow());
   const gpsRef = useRef<{
     lat: number;
     lng: number;
@@ -699,7 +696,7 @@ export default function TeardownComponentsScreen() {
     if (!result.canceled && result.assets[0]) {
       const uri = result.assets[0].uri;
       const fileName = `${fromCode}_cable.jpg`;
-      photoTimestamps.current.before_span = new Date().toISOString();
+      photoTimestamps.current.before_span = await getDisplayTime();
 
       await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
       await FileSystem.copyAsync({ from: uri, to: draftDir + fileName }).catch(
@@ -746,7 +743,7 @@ export default function TeardownComponentsScreen() {
   }
 
   async function buildFields(): Promise<Record<string, string>> {
-    const finishedAt = new Date().toISOString();
+    const finishedAt = await getDisplayTime();
     const user = await tokenStore.getUser();
 
     const didCollectComponents =
@@ -790,6 +787,10 @@ export default function TeardownComponentsScreen() {
     if (params.span_id) fields.pole_span_id = params.span_id;
     if (params.node_id && params.node_id !== "undefined")
       fields.node_id = params.node_id;
+
+    // Send lineman-edited pole names so the backend stamps them into the images
+    if (params.pole_name) fields.from_pole_name = params.pole_name;
+    if (params.to_pole_name) fields.to_pole_name = params.to_pole_name;
     if (params.project_id && params.project_id !== "undefined") {
       fields.project_id = params.project_id;
     }
@@ -926,7 +927,7 @@ export default function TeardownComponentsScreen() {
         project_name: params.project_name ?? "",
         accent: params.accent ?? "",
         span_id: params.span_id ?? "",
-        submitted_at: new Date().toISOString(),
+        submitted_at: await getDisplayTime(),
         cable_collected: collectedAll ? "1" : "0",
         expected_cable: String(adjExpected),
         length_meters: String(lengthMeters),
