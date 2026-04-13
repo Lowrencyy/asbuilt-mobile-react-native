@@ -13,6 +13,7 @@ import { Image as ExpoImage } from "expo-image";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Location from "expo-location";
+import * as MediaLibrary from "expo-media-library";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -603,21 +604,63 @@ export default function DestinationPoleScreen() {
     (async () => {
       await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
 
-      // Do NOT pre-copy from pole_drafts into destination — that would pull in
-      // photos from a previous teardown pass on this pole. Only load what was
-      // explicitly captured on this teardown screen (stored in draftDir).
+      const poleDraftDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${params.node_id}/${params.to_pole_id}/`;
 
-      const load = async (file: string): Promise<PhotoField | null> => {
-        const path = draftDir + file;
-        const info = await FileSystem.getInfoAsync(path);
-        if (!info.exists) return null;
-        return createPhotoField(info.uri, file);
+      // Load a photo for this teardown session.
+      // Priority 1: teardown_drafts (captured on this screen — always fresh).
+      // Priority 2 (before & tag only): pole_drafts from a previous pole-detail visit.
+      //   → copied into teardown_drafts so submission reads from one place.
+      // After is NEVER reused — each span needs a fresh after photo.
+      const load = async (
+        tdFile: string,
+        pdFile: string | null, // null = never fall back to pole_drafts
+      ): Promise<PhotoField | null> => {
+        const tdPath = draftDir + tdFile;
+        const tdInfo = await FileSystem.getInfoAsync(tdPath).catch(() => ({ exists: false }));
+        if ((tdInfo as any).exists) {
+          const viewPath = tdPath.replace(/\.jpg$/i, "_view.jpg");
+          const viewInfo = await FileSystem.getInfoAsync(viewPath).catch(() => ({ exists: false }));
+          const version = Date.now();
+          return {
+            uri: `${(viewInfo as any).exists ? viewPath : tdPath}?v=${version}`,
+            fileUri: tdPath,
+            name: tdFile,
+            type: "image/jpeg",
+            version,
+          };
+        }
+
+        if (pdFile) {
+          const pdPath = poleDraftDir + pdFile;
+          const pdInfo = await FileSystem.getInfoAsync(pdPath).catch(() => ({ exists: false }));
+          if ((pdInfo as any).exists) {
+            await FileSystem.copyAsync({ from: (pdInfo as any).uri, to: tdPath }).catch(() => {});
+            // Also copy _view.jpg from pole_drafts if available
+            const pdViewPath = pdPath.replace(/\.jpg$/i, "_view.jpg");
+            const tdViewPath = tdPath.replace(/\.jpg$/i, "_view.jpg");
+            const pdViewInfo = await FileSystem.getInfoAsync(pdViewPath).catch(() => ({ exists: false }));
+            if ((pdViewInfo as any).exists) {
+              await FileSystem.copyAsync({ from: pdViewPath, to: tdViewPath }).catch(() => {});
+            }
+            const viewInfo = await FileSystem.getInfoAsync(tdViewPath).catch(() => ({ exists: false }));
+            const version = Date.now();
+            return {
+              uri: `${(viewInfo as any).exists ? tdViewPath : tdPath}?v=${version}`,
+              fileUri: tdPath,
+              name: tdFile,
+              type: "image/jpeg",
+              version,
+            };
+          }
+        }
+
+        return null;
       };
 
       const [b, a, t] = await Promise.all([
-        load(F.before),
-        load(F.after),
-        load(F.tag),
+        load(F.before, `pole_${params.to_pole_id}_before.jpg`),  // reuse if available
+        load(F.after,  null),                                     // always fresh
+        load(F.tag,    `pole_${params.to_pole_id}_poletag.jpg`),  // reuse if available
       ]);
 
       if (b) setPhotoBefore(b);
@@ -830,33 +873,58 @@ export default function DestinationPoleScreen() {
     await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
 
     const compressed = await compressPhoto(uri);
-    const stamped = stampLines?.length ? await stampPhoto(compressed, stampLines) : compressed;
+
+    // ── Clean version → disk (uploaded to backend) ──
     const dest = draftDir + fileName;
     const existing = await FileSystem.getInfoAsync(dest);
+    if (existing.exists) await FileSystem.deleteAsync(dest, { idempotent: true });
+    await FileSystem.copyAsync({ from: compressed, to: dest });
 
-    if (existing.exists) {
-      await FileSystem.deleteAsync(dest, { idempotent: true });
-    }
-
-    await FileSystem.copyAsync({ from: stamped, to: dest });
-
-    if (fileName === F.before || fileName === F.tag) {
-      const suffix = fileName === F.before ? "_before.jpg" : "_poletag.jpg";
-      const poleDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${params.node_id}/${params.to_pole_id}/`;
-      const poleDest = `${poleDir}pole_${params.to_pole_id}${suffix}`;
-
-      FileSystem.makeDirectoryAsync(poleDir, { intermediates: true })
-        .then(async () => {
-          const existingPole = await FileSystem.getInfoAsync(poleDest);
-          if (existingPole.exists) {
-            await FileSystem.deleteAsync(poleDest, { idempotent: true });
-          }
-          return FileSystem.copyAsync({ from: stamped, to: poleDest });
+    // ── Stamped version → _view file on disk + gallery (display + lineman backup) ──
+    let displayUri = dest;
+    if (stampLines?.length) {
+      const stamped = await stampPhoto(compressed, stampLines);
+      const viewDest = dest.replace(/\.jpg$/i, "_view.jpg");
+      const viewExisting = await FileSystem.getInfoAsync(viewDest);
+      if ((viewExisting as any).exists) await FileSystem.deleteAsync(viewDest, { idempotent: true });
+      await FileSystem.copyAsync({ from: stamped, to: viewDest });
+      displayUri = viewDest;
+      MediaLibrary.requestPermissionsAsync()
+        .then(({ status }) => {
+          if (status === "granted") MediaLibrary.saveToLibraryAsync(stamped).catch(() => {});
         })
         .catch(() => {});
     }
 
-    return createPhotoField(dest, fileName);
+    // Cross-copy clean + stamped view to pole_drafts for before/tag (reused on future spans)
+    if (fileName === F.before || fileName === F.tag) {
+      const suffix = fileName === F.before ? "_before" : "_poletag";
+      const poleDir = `${FileSystem.documentDirectory}pole_drafts/${projFolder}/${params.node_id}/${params.to_pole_id}/`;
+      const poleCleanDest = `${poleDir}pole_${params.to_pole_id}${suffix}.jpg`;
+      const poleViewDest = `${poleDir}pole_${params.to_pole_id}${suffix}_view.jpg`;
+
+      FileSystem.makeDirectoryAsync(poleDir, { intermediates: true })
+        .then(async () => {
+          const existingClean = await FileSystem.getInfoAsync(poleCleanDest);
+          if ((existingClean as any).exists) await FileSystem.deleteAsync(poleCleanDest, { idempotent: true });
+          await FileSystem.copyAsync({ from: compressed, to: poleCleanDest });
+          if (displayUri !== dest) {
+            const existingView = await FileSystem.getInfoAsync(poleViewDest);
+            if ((existingView as any).exists) await FileSystem.deleteAsync(poleViewDest, { idempotent: true });
+            return FileSystem.copyAsync({ from: displayUri, to: poleViewDest });
+          }
+        })
+        .catch(() => {});
+    }
+
+    const version = Date.now();
+    return {
+      uri: `${displayUri}?v=${version}`,
+      fileUri: dest,
+      name: fileName,
+      type: "image/jpeg",
+      version,
+    };
   }
 
   function openViewer(label: string, photo: PhotoField, retakeFn: () => void) {
@@ -873,12 +941,14 @@ export default function DestinationPoleScreen() {
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 1, skipProcessing: false });
       if (!photo?.uri) return;
+      const capturedAt = getPHTNow();
       const setter = activeCameraTab === "before" ? setPhotoBefore : activeCameraTab === "after" ? setPhotoAfter : setPhotoTag;
       const qualitySetter = activeCameraTab === "before" ? setQualityBefore : activeCameraTab === "after" ? setQualityAfter : setQualityTag;
       const file = activeCameraTab === "before" ? F.before : activeCameraTab === "after" ? F.after : F.tag;
       setter(createPhotoField(photo.uri, file));
       const saved = await savePhotoDraft(file, photo.uri, buildStampLines(activeCameraTab));
       setter(saved);
+      cacheSet(`photo_captured_at_${params.to_pole_id}_${activeCameraTab}`, capturedAt).catch(() => {});
       const variance = await checkPhotoQuality(saved.fileUri ?? photo.uri);
       const pct = varianceToPercent(variance);
       qualitySetter(pct);
@@ -897,10 +967,24 @@ export default function DestinationPoleScreen() {
     const trimmed = editToNameDraft.trim();
     if (!trimmed) return;
     setSavingToName(true);
+
+    // 1. Update local state immediately (works offline too)
     setEditedToPoleName(trimmed);
     await cacheSet(`draft_to_pole_name_${params.to_pole_id}`, trimmed).catch(() => {});
 
-    // Try to save to backend immediately; queue if offline
+    // 2. Patch the poles list cache so the list screen shows the new name without a sync
+    if (params.node_id) {
+      const polesCacheKey = `poles_node_${params.node_id}`;
+      const cachedPoles = await cacheGet<any[]>(polesCacheKey).catch(() => null);
+      if (cachedPoles) {
+        const updated = cachedPoles.map((p) =>
+          String(p.id) === String(params.to_pole_id) ? { ...p, pole_name: trimmed } : p,
+        );
+        await cacheSet(polesCacheKey, updated).catch(() => {});
+      }
+    }
+
+    // 3. Try to save to backend immediately; queue if offline
     try {
       await api.put(`/poles/${params.to_pole_id}`, { pole_name: trimmed });
     } catch (e: any) {

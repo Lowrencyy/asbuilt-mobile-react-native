@@ -6,10 +6,12 @@
  * - Also flushes whenever the app comes back to the foreground
  */
 import { AppState, AppStateStatus } from "react-native";
+import { BASE_URL } from "./api";
 import { gpsQueueFlush } from "./gps-queue";
 import { processSyncQueue } from "./sync-queue";
+import { processSimpleQueue } from "./simple-queue";
 
-const PING_URL    = "https://darkseagreen-meerkat-296232.hostingersite.com/api/v1/status";
+const PING_URL    = `${BASE_URL}/status`;
 const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -34,7 +36,7 @@ async function tryFlush(): Promise<void> {
   try {
     const online = await isOnline();
     if (!online) return;
-    await Promise.allSettled([processSyncQueue(), gpsQueueFlush()]);
+    await Promise.allSettled([processSyncQueue(), processSimpleQueue(), gpsQueueFlush()]);
   } finally {
     _flushing = false;
   }

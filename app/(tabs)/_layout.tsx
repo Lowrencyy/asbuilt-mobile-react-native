@@ -15,6 +15,7 @@ import { AnimatedTabButton } from "@/components/AnimatedTabButton";
 import TabTransitionOverlay from "@/components/TabTransitionOverlay";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { isPrefetchDone, markPrefetchDone, prefetchAll } from "@/lib/prefetch";
+import { startLocationSync, stopLocationSync } from "@/lib/location-sync";
 import { processSyncQueue } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
 
@@ -43,15 +44,19 @@ export default function TabLayout() {
   }, []);
 
   useEffect(() => {
-    if (isPrefetchDone()) return;
     tokenStore.isLoggedIn().then((loggedIn) => {
       if (!loggedIn) {
         router.replace("/login" as any);
-      } else {
-        markPrefetchDone();
-        Promise.allSettled([prefetchAll(), processSyncQueue()]);
+        return;
       }
+      // Always start on every mount/reload so location sync is never skipped
+      startLocationSync();
+
+      if (isPrefetchDone()) return;
+      markPrefetchDone();
+      Promise.allSettled([prefetchAll(), processSyncQueue()]);
     });
+    return () => { stopLocationSync(); };
   }, []);
 
   const [pendingRoute, setPendingRoute] = useState<string | null>(null);

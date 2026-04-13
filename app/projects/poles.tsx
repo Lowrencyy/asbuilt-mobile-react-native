@@ -1,10 +1,12 @@
 import api from "@/lib/api";
 import { cacheGet, cacheSet } from "@/lib/cache";
-import { Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Image,
+  LayoutChangeEvent,
   Modal,
   Pressable,
   StyleSheet,
@@ -13,6 +15,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+const TELCO_LOGO = require("../../assets/images/telcovantage-logo.png");
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 
@@ -62,6 +66,98 @@ type Span = {
 type SearchRow = { type: "search"; key: string };
 type PoleRow = { type: "pole"; key: string; pole: Pole };
 type ListRow = SearchRow | PoleRow;
+
+// ─── Static tile map (no WebView, no OOM risk) ───────────────────────────────
+const ZOOM = 17;
+const TILE_PX = 256;
+
+function latLngToTileFrac(lat: number, lng: number, z: number) {
+  const n = Math.pow(2, z);
+  const xFrac = ((lng + 180) / 360) * n;
+  const latRad = (lat * Math.PI) / 180;
+  const yFrac =
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) *
+    n;
+  return { xFrac, yFrac, tileX: Math.floor(xFrac), tileY: Math.floor(yFrac) };
+}
+
+function StaticTileMap({ lat, lng }: { lat: number; lng: number }) {
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+
+  const { xFrac, yFrac, tileX, tileY } = latLngToTileFrac(lat, lng, ZOOM);
+  const tileUrl = `https://tile.openstreetmap.org/${ZOOM}/${tileX}/${tileY}.png`;
+
+  // Fractional offset of the coordinate within the tile (0–1)
+  const fracX = xFrac - tileX;
+  const fracY = yFrac - tileY;
+
+  const onLayout = (e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setSize({ w: width, h: height });
+  };
+
+  // Scale the 256×256 tile to cover the container (cover-fit)
+  const scale = size ? Math.max(size.w / TILE_PX, size.h / TILE_PX) : 1;
+  const imgW = TILE_PX * scale;
+  const imgH = TILE_PX * scale;
+
+  // Position the tile so the coordinate lands exactly at the container center.
+  // This guarantees the pin is always visible regardless of where the
+  // coordinate falls within the tile.
+  const offsetX = size ? size.w / 2 - fracX * imgW : 0;
+  const offsetY = size ? size.h / 2 - fracY * imgH : 0;
+
+  // Pin is always at container center
+  const PIN = 18;
+  const pinLeft = size ? size.w / 2 - PIN / 2 : 0;
+  const pinTop = size ? size.h / 2 - PIN : 0;
+
+  // Render 3 horizontal tiles (left, center, right) so the container is always
+  // fully covered no matter where the coordinate falls within the center tile.
+  const tileUrlLeft  = `https://tile.openstreetmap.org/${ZOOM}/${tileX - 1}/${tileY}.png`;
+  const tileUrlRight = `https://tile.openstreetmap.org/${ZOOM}/${tileX + 1}/${tileY}.png`;
+
+  return (
+    <View style={StyleSheet.absoluteFillObject} onLayout={onLayout}>
+      <Image
+        source={{ uri: tileUrlLeft, headers: { "User-Agent": "TelcoVantageApp/1.0" } }}
+        style={{ position: "absolute", left: offsetX - imgW, top: offsetY, width: imgW, height: imgH }}
+        resizeMode="cover"
+      />
+      <Image
+        source={{ uri: tileUrl, headers: { "User-Agent": "TelcoVantageApp/1.0" } }}
+        style={{ position: "absolute", left: offsetX, top: offsetY, width: imgW, height: imgH }}
+        resizeMode="cover"
+      />
+      <Image
+        source={{ uri: tileUrlRight, headers: { "User-Agent": "TelcoVantageApp/1.0" } }}
+        style={{ position: "absolute", left: offsetX + imgW, top: offsetY, width: imgW, height: imgH }}
+        resizeMode="cover"
+      />
+      {size && (
+        <View
+          style={{
+            position: "absolute",
+            left: pinLeft,
+            top: pinTop,
+            width: PIN,
+            height: PIN,
+            borderRadius: PIN / 2,
+            backgroundColor: "#EF4444",
+            borderWidth: 2.5,
+            borderColor: "#fff",
+            shadowColor: "#000",
+            shadowOpacity: 0.35,
+            shadowRadius: 3,
+            shadowOffset: { width: 0, height: 2 },
+            elevation: 4,
+          }}
+        />
+      )}
+    </View>
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function getPillStyle(status: string) {
   const normalized = status?.trim().toLowerCase();
@@ -118,58 +214,6 @@ function getTileLayerScript() {
   `;
 }
 
-function buildSinglePoleMapHtml(lat: number, lng: number, status: string) {
-  const markerColor = getMarkerColor(status);
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<style>
-html,body,#map{
-  margin:0;
-  padding:0;
-  width:100%;
-  height:100%;
-  border-radius:22px;
-  overflow:hidden;
-  background:#f8fafc;
-}
-.leaflet-container{
-  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-}
-</style>
-</head>
-<body>
-<div id="map"></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-var map=L.map('map',{
-  zoomControl:false,
-  dragging:false,
-  scrollWheelZoom:false,
-  doubleClickZoom:false,
-  touchZoom:false,
-  boxZoom:false,
-  keyboard:false
-}).setView([${lat},${lng}],17);
-
-${getTileLayerScript()}
-
-L.circleMarker([${lat},${lng}],{
-  radius:7,
-  color:'${markerColor}',
-  fillColor:'${markerColor}',
-  fillOpacity:1,
-  weight:2
-}).addTo(map);
-
-setTimeout(function(){ map.invalidateSize(); }, 100);
-</script>
-</body>
-</html>`;
-}
 
 function buildHeroMapHtml(poles: Pole[]) {
   const valid = poles.filter((p) => p.map_latitude && p.map_longitude);
@@ -770,12 +814,16 @@ function PoleCard({
   pole,
   accentColor,
   nodeId,
+  nodeCode,
+  nodeName,
   projectId,
   projectName,
 }: {
   pole: Pole;
   accentColor: string;
   nodeId: string;
+  nodeCode: string;
+  nodeName: string;
   projectId: string;
   projectName: string;
 }) {
@@ -818,8 +866,6 @@ function PoleCard({
   }, [pole.map_latitude, pole.map_longitude]);
 
   const hasCoords = !!pole.map_latitude && !!pole.map_longitude;
-  const lat = hasCoords ? parseFloat(pole.map_latitude!) : null;
-  const lng = hasCoords ? parseFloat(pole.map_longitude!) : null;
 
   const openDetail = () =>
     router.push({
@@ -829,6 +875,8 @@ function PoleCard({
         pole_code: pole.pole_code,
         pole_name: pole.pole_name || pole.pole_code,
         node_id: nodeId,
+        node_code: nodeCode,
+        node_name: nodeName,
         project_id: projectId,
         project_name: projectName,
         accent: accentColor,
@@ -844,25 +892,24 @@ function PoleCard({
       <View style={styles.siteCard}>
         <View style={[styles.heroStrip, { backgroundColor: accentColor }]}>
           <View style={styles.heroMapShell}>
-            {hasCoords && lat !== null && lng !== null ? (
-              <WebView
-                style={StyleSheet.absoluteFillObject}
-                scrollEnabled={false}
-                pointerEvents="none"
-                originWhitelist={["*"]}
-                javaScriptEnabled
-                domStorageEnabled
-                mixedContentMode="always"
-                source={{
-                  html: buildSinglePoleMapHtml(lat, lng, pole.status),
-                  baseUrl: "https://local.telcovantage/",
-                }}
-              />
+            {hasCoords ? (
+              <>
+                <StaticTileMap
+                  lat={parseFloat(pole.map_latitude!)}
+                  lng={parseFloat(pole.map_longitude!)}
+                />
+                <Text style={styles.noGpsCoords} numberOfLines={1}>
+                  {parseFloat(pole.map_latitude!).toFixed(5)},{" "}
+                  {parseFloat(pole.map_longitude!).toFixed(5)}
+                </Text>
+              </>
             ) : (
-              <View style={styles.heroGrid}>
-                {Array.from({ length: 24 }).map((_, i) => (
-                  <View key={i} style={styles.heroDot} />
-                ))}
+              <View style={styles.noGpsPlaceholder}>
+                <Image
+                  source={TELCO_LOGO}
+                  style={styles.noGpsLogo}
+                  resizeMode="contain"
+                />
               </View>
             )}
 
@@ -1004,7 +1051,8 @@ export default function PolesScreen() {
           : Array.isArray(data?.data)
             ? data.data
             : [];
-        setSpans(raw);
+        // Exclude superseded spans (replaced by split) and completed spans
+        setSpans(raw.filter((s) => s.status !== "superseded" && s.status !== "completed"));
       })
       .catch(() => {});
   }
@@ -1012,6 +1060,14 @@ export default function PolesScreen() {
   useEffect(() => {
     loadSpans();
   }, [node_id]);
+
+  // Re-fetch spans whenever the screen comes back into focus so that splits
+  // performed on the select-pair screen are reflected immediately.
+  useFocusEffect(
+    useCallback(() => {
+      loadSpans();
+    }, [node_id]),
+  );
 
   const filteredPoles = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1047,9 +1103,14 @@ export default function PolesScreen() {
     [filteredPoles],
   );
 
+  const activeSpans = useMemo(
+    () => spans.filter((s) => s.status !== "superseded" && s.status !== "completed"),
+    [spans],
+  );
+
   const vicinityMapHtml = useMemo(
-    () => buildVicinityMapHtml(allPoles, spans),
-    [allPoles, spans],
+    () => buildVicinityMapHtml(allPoles, activeSpans),
+    [allPoles, activeSpans],
   );
 
   const heroMapHtml = useMemo(() => buildHeroMapHtml(allPoles), [allPoles]);
@@ -1311,6 +1372,8 @@ export default function PolesScreen() {
                   pole={item.pole}
                   accentColor={accentColor}
                   nodeId={node_id}
+                  nodeCode={node_code ?? ""}
+                  nodeName={node_name ?? ""}
                   projectId={projectId}
                   projectName={projectName}
                 />
@@ -1814,5 +1877,31 @@ const styles = StyleSheet.create({
   mapModalMap: {
     flex: 1,
     backgroundColor: "#E5E7EB",
+  },
+  noGpsPlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  noGpsLogo: {
+    width: "60%",
+    height: "60%",
+    opacity: 0.35,
+  },
+  noGpsCoords: {
+    position: "absolute",
+    bottom: 5,
+    left: 6,
+    right: 6,
+    textAlign: "center",
+    fontSize: 9,
+    color: "#fff",
+    fontWeight: "700",
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    overflow: "hidden",
   },
 });

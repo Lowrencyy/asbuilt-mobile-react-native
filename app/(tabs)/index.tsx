@@ -127,7 +127,21 @@ const SAGE = "#7AC7A7";
 const DEEP_TEAL = "#0B8F63";
 const GOLD_SOFT = "#E8C56B";
 
-async function loadAssetMaps(): Promise<AssetMaps> {
+/** On Android, only load the background image needed right now to avoid OOM.
+ *  All 11 images total ~27MB of base64 — two alone (foggy-night, rainy-night)
+ *  are 9MB+ each and will cause `loadDataWithBaseURL` to crash with OOM.
+ */
+function neededBgKey(): string {
+  const hour = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }),
+  ).getHours();
+  if (hour >= 5 && hour < 10) return "partly_cloudy";
+  if (hour >= 10 && hour < 17) return "sunny";
+  if (hour >= 17 && hour < 20) return "sunny_sunset";
+  return "night";
+}
+
+async function loadAssetMaps(bgKeyFilter?: string): Promise<AssetMaps> {
   const toBase64 = async (mod: number, mime: string): Promise<string> => {
     try {
       const asset = Asset.fromModule(mod);
@@ -144,9 +158,16 @@ async function loadAssetMaps(): Promise<AssetMaps> {
   };
 
   try {
+    // If bgKeyFilter is set (Android), only load that one background image.
+    const bgModules = bgKeyFilter
+      ? Object.fromEntries(
+          Object.entries(BG_MODULES).filter(([k]) => k === bgKeyFilter),
+        )
+      : BG_MODULES;
+
     const [bgEntries, iconEntries] = await Promise.all([
       Promise.all(
-        Object.entries(BG_MODULES).map(
+        Object.entries(bgModules).map(
           async ([k, v]) => [k, await toBase64(v, "image/jpeg")] as const,
         ),
       ),
@@ -176,6 +197,7 @@ function buildHtml(
   preloaded?: WeatherCache | null,
   userName?: string,
   isAndroid?: boolean,
+  screenHeight?: number,
 ) {
   const fallbackHour = new Date(
     new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }),
@@ -208,7 +230,7 @@ function buildHtml(
 
   return `
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-h="${screenHeight ?? 0}">
 <head>
   <meta charset="UTF-8" />
   <meta
@@ -256,10 +278,10 @@ function buildHtml(
     }
 
     body {
-      height: 100vh;
+      height: ${screenHeight ? `${screenHeight}px` : "100vh"};
       overflow: hidden;
       padding: 8px;
-      padding-top: 20px;
+      padding-top: ${isAndroid ? "12px" : "20px"};
       padding-bottom: 8px;
       display: flex;
       flex-direction: column;
@@ -1665,7 +1687,8 @@ export default function Index() {
   const frozenHtmlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    loadAssetMaps()
+    // On Android only load the one needed background to stay well under OOM limits.
+    loadAssetMaps(Platform.OS === "android" ? neededBgKey() : undefined)
       .then(setAssetMaps)
       .catch(() => {});
   }, []);
@@ -1774,15 +1797,23 @@ export default function Index() {
   const webViewHtml = useMemo(() => {
     const assetsReady = assetMaps && Object.keys(assetMaps.bg).length > 0;
     // Freeze HTML on first full build so GPS/weather updates don't reload the WebView
+    if (assetsReady && frozenHtmlRef.current) {
+      // Rebuild if screen dimensions changed (e.g. orientation change)
+      const heightToken = `data-h="${screenHeight}"`;
+      if (!frozenHtmlRef.current.includes(heightToken)) {
+        frozenHtmlRef.current = null;
+      }
+    }
     if (assetsReady && !frozenHtmlRef.current) {
       frozenHtmlRef.current = buildHtml(
         coords?.lat ?? null,
         coords?.lon ?? null,
-        assetMaps.bg,
+        assetMaps.bg,   // Android: already has only 1 entry (filtered at load time)
         assetMaps.icons,
         weatherCache,
         userName,
         isAndroid,
+        screenHeight,
       );
     }
     return frozenHtmlRef.current ?? buildHtml(
@@ -1793,8 +1824,10 @@ export default function Index() {
       weatherCache,
       userName,
       isAndroid,
+      screenHeight,
     );
-  }, [assetMaps, coords?.lat, coords?.lon, weatherCache, userName, isAndroid]);
+  }, [assetMaps, coords?.lat, coords?.lon, weatherCache, userName, isAndroid, screenHeight]);
+
 
   useEffect(() => {
     Animated.parallel([
@@ -2041,13 +2074,22 @@ export default function Index() {
         <WebView
           key={webViewKey}
           originWhitelist={["*"]}
-          source={{ html: webViewHtml }}
+          source={{
+            // Safety cap: Android's loadDataWithBaseURL base64-encodes the HTML.
+            // If HTML exceeds ~4MB the JVM allocation will OOM. Strip leftover
+            // data-URIs as a last resort so the card renders without a background
+            // rather than crashing the app.
+            html:
+              isAndroid && webViewHtml.length > 4_000_000
+                ? webViewHtml.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, "")
+                : webViewHtml,
+          }}
           scalesPageToFit={false}
           style={styles.webview}
           scrollEnabled={false}
           bounces={false}
           showsVerticalScrollIndicator={false}
-          backgroundColor="#ffffff"
+          backgroundColor="#1E2329"
           javaScriptEnabled
           domStorageEnabled
           mixedContentMode="always"
@@ -2222,7 +2264,7 @@ const styles = StyleSheet.create({
 
   syncWrapper: {
     position: "absolute",
-    top: 30,
+    top: Platform.OS === "android" ? 12 : 30,
     right: 20,
     alignItems: "center",
     zIndex: 10,

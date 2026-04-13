@@ -7,9 +7,10 @@
  *  - The user has granted foreground location permission
  */
 import * as Location from "expo-location";
+import { BASE_URL } from "./api";
 import { tokenStore } from "./token";
 
-const PING_URL    = "https://darkseagreen-meerkat-296232.hostingersite.com/api/v1/lineman-location";
+const PING_URL    = `${BASE_URL}/lineman-location`;
 const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 let _timer: ReturnType<typeof setInterval> | null = null;

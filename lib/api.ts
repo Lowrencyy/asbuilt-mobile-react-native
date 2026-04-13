@@ -1,8 +1,10 @@
 import { tokenStore } from "@/lib/token";
 
-const BASE_URL = "https://disguisedly-enarthrodial-kristi.ngrok-free.dev/api/v1";
+export const BASE_URL =
+  "https://disguisedly-enarthrodial-kristi.ngrok-free.dev/api/v1";
 
-const ASSET_BASE = "https://disguisedly-enarthrodial-kristi.ngrok-free.dev";
+export const ASSET_BASE =
+  "https://disguisedly-enarthrodial-kristi.ngrok-free.dev";
 
 /** Converts a stored path like "project-logos/abc.png" to a full URL */
 export function assetUrl(path: string | null | undefined): string | null {

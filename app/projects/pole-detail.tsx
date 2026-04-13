@@ -15,7 +15,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, {
   useCallback,
   useEffect,
@@ -363,22 +363,38 @@ function stamp(payload){
     var ctx=c.getContext('2d');
     ctx.drawImage(img,0,0);
     var lines=data.lines;
-    var fSize=Math.max(22,Math.round(img.width*0.024));
-    var lh=Math.round(fSize*1.6);
-    var pad=Math.round(fSize*0.9);
+    // Scale font so stamp never exceeds ~28% of image height regardless of line count
+    var maxStampH=img.height*0.28;
+    var fSize=Math.min(
+      Math.max(16, Math.round(img.width*0.020)),
+      Math.floor(maxStampH/(lines.length*1.55+1.8))
+    );
+    var lh=Math.round(fSize*1.55);
+    var pad=Math.round(fSize*0.85);
     var totalH=lines.length*lh+pad*2;
-    var grad=ctx.createLinearGradient(0,img.height-totalH-30,0,img.height);
+    var grad=ctx.createLinearGradient(0,img.height-totalH-40,0,img.height);
     grad.addColorStop(0,'rgba(0,0,0,0)');
-    grad.addColorStop(0.35,'rgba(0,0,0,0.55)');
-    grad.addColorStop(1,'rgba(0,0,0,0.80)');
+    grad.addColorStop(0.3,'rgba(0,0,0,0.60)');
+    grad.addColorStop(1,'rgba(0,0,0,0.85)');
     ctx.fillStyle=grad;
-    ctx.fillRect(0,img.height-totalH-30,img.width,totalH+30);
-    ctx.font='bold '+fSize+'px Arial,sans-serif';
-    ctx.fillStyle='#FFFFFF';
-    ctx.shadowColor='rgba(0,0,0,0.9)';
-    ctx.shadowBlur=5;
+    ctx.fillRect(0,img.height-totalH-40,img.width,totalH+40);
+    ctx.shadowColor='rgba(0,0,0,0.95)';
+    ctx.shadowBlur=4;
     lines.forEach(function(line,i){
-      ctx.fillText(line,pad,img.height-totalH+pad+(i+1)*lh-6);
+      var y=img.height-totalH+pad+(i+1)*lh-4;
+      // First line (date/time) slightly larger and lighter
+      if(i===0){
+        ctx.font='bold '+Math.round(fSize*1.08)+'px Arial,sans-serif';
+        ctx.fillStyle='#FFFFFF';
+      } else if(i===lines.length-1){
+        // Last line (timestamp+project) slightly smaller and muted
+        ctx.font=Math.round(fSize*0.88)+'px Arial,sans-serif';
+        ctx.fillStyle='rgba(255,255,255,0.80)';
+      } else {
+        ctx.font='bold '+fSize+'px Arial,sans-serif';
+        ctx.fillStyle='#FFFFFF';
+      }
+      ctx.fillText(line,pad,y);
     });
     var b64=c.toDataURL('image/jpeg',0.92).split(',')[1];
     window.ReactNativeWebView.postMessage(JSON.stringify({stamped:b64}));
@@ -397,6 +413,8 @@ export default function PoleDetailScreen() {
     pole_code,
     pole_name,
     node_id,
+    node_code,
+    node_name,
     project_id,
     project_name,
     accent,
@@ -405,6 +423,8 @@ export default function PoleDetailScreen() {
     pole_code: string;
     pole_name: string;
     node_id: string;
+    node_code: string;
+    node_name: string;
     project_id: string;
     project_name: string;
     accent: string;
@@ -426,6 +446,8 @@ export default function PoleDetailScreen() {
   } | null>(null);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
   const [street, setStreet] = useState("");
+  const [city, setCity] = useState("");
+  const [province, setProvince] = useState("");
 
   const [editedPoleName, setEditedPoleName] = useState(pole_name ?? "");
   const [editNameModalOpen, setEditNameModalOpen] = useState(false);
@@ -603,10 +625,19 @@ export default function PoleDetailScreen() {
       if (!dirInfo.exists) return;
 
       const load = async (file: string): Promise<PhotoField | null> => {
-        const path = draftDir + file;
-        const info = await FileSystem.getInfoAsync(path);
+        const cleanPath = draftDir + file;
+        const info = await FileSystem.getInfoAsync(cleanPath);
         if (!info.exists) return null;
-        return createPhotoField(info.uri, file);
+        const viewPath = cleanPath.replace(/\.jpg$/i, "_view.jpg");
+        const viewInfo = await FileSystem.getInfoAsync(viewPath).catch(() => ({ exists: false }));
+        const version = Date.now();
+        return {
+          uri: `${(viewInfo as any).exists ? viewPath : cleanPath}?v=${version}`,
+          fileUri: cleanPath,
+          name: file,
+          type: "image/jpeg",
+          version,
+        };
       };
 
       const [pb, pa, pt] = await Promise.all([
@@ -643,6 +674,48 @@ export default function PoleDetailScreen() {
     setGpsDraftState,
   ]);
 
+  // Reload photos from disk each time this screen comes into focus.
+  // Catches: stale in-memory photo URIs when files were deleted after submission,
+  // and ensures correct photos show when navigating back to a previously-visited pole.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+
+      (async () => {
+        const loadFile = async (file: string): Promise<PhotoField> => {
+          const cleanPath = draftDir + file;
+          const info = await FileSystem.getInfoAsync(cleanPath).catch(() => null);
+          if (!(info as any)?.exists) return null;
+          const viewPath = cleanPath.replace(/\.jpg$/i, "_view.jpg");
+          const viewInfo = await FileSystem.getInfoAsync(viewPath).catch(() => ({ exists: false }));
+          const version = Date.now();
+          return {
+            uri: `${(viewInfo as any).exists ? viewPath : cleanPath}?v=${version}`,
+            fileUri: cleanPath,
+            name: file,
+            type: "image/jpeg",
+            version,
+          };
+        };
+
+        const [pb, pa, pt] = await Promise.all([
+          loadFile(F.before),
+          loadFile(F.after),
+          loadFile(F.tag),
+        ]);
+
+        if (cancelled) return;
+
+        setPhotoBefore(pb);
+        setPhotoAfter(pa);
+        setPhotoTag(pt);
+        if (pb || pa || pt) setDraftRestored(true);
+      })();
+
+      return () => { cancelled = true; };
+    }, [draftDir, F.before, F.after, F.tag]),
+  );
+
   useEffect(() => {
     if (!lat || !lng) return;
 
@@ -659,6 +732,8 @@ export default function PoleDetailScreen() {
         const s =
           a.road ?? a.pedestrian ?? a.footway ?? a.street ?? a.path ?? null;
         setStreet(s ?? "");
+        setCity(a.city ?? a.town ?? a.municipality ?? a.village ?? a.suburb ?? "");
+        setProvince(a.province ?? a.state ?? a.county ?? "");
       })
       .catch(() => {});
   }, [lat, lng]);
@@ -685,13 +760,26 @@ export default function PoleDetailScreen() {
   function buildStampLines(tab: "before" | "after" | "tag"): string[] {
     const name = editedPoleName || pole_name || pole_code || "";
     const tabLabel = tab === "before" ? "BEFORE" : tab === "after" ? "AFTER" : "POLE TAG";
-    const gpsText = lat && lng ? `${lat.toFixed(6)}, ${lng.toFixed(6)}` : "GPS not captured";
-    const time = getPHTNow().replace("T", " ").substring(0, 19) + " PHT";
-    return [
-      `${name}  [${tabLabel}]`,
-      `GPS: ${gpsText}`,
-      `${time}  \u2022  ${project_name || ""}`,
-    ];
+    const now = new Date();
+    // "Apr 13, 2026  14:33:57"
+    const datePart = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Manila" });
+    const timePart = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Manila" });
+    const dateTimeLine = `${datePart}  ${timePart}`;
+    const lines: string[] = [dateTimeLine];
+    if (street) lines.push(street);
+    const cityProv = [city, province].filter(Boolean).join(", ");
+    if (cityProv) lines.push(cityProv);
+    if (lat && lng) {
+      const latStr = `${Math.abs(lat).toFixed(6)}\u00b0 ${lat >= 0 ? "N" : "S"}`;
+      const lngStr = `${Math.abs(lng).toFixed(6)}\u00b0 ${lng >= 0 ? "E" : "W"}`;
+      lines.push(`${latStr}  ${lngStr}`);
+    }
+    lines.push(`${name}  (${tabLabel})`);
+    const nodeLabel = node_name || node_code || node_id || "";
+    if (nodeLabel) lines.push(`Node: ${nodeLabel}`);
+    const isoTime = getPHTNow().replace("T", " ").substring(0, 19) + " PHT";
+    lines.push(`${isoTime}  \u2022  ${project_name || ""}`);
+    return lines;
   }
 
   async function stampPhoto(uri: string, lines: string[]): Promise<string> {
@@ -770,17 +858,38 @@ export default function PoleDetailScreen() {
     await FileSystem.makeDirectoryAsync(draftDir, { intermediates: true });
 
     const compressed = await compressPhoto(uri);
-    const stamped = stampLines?.length ? await stampPhoto(compressed, stampLines) : compressed;
+
+    // ── Clean version → disk, used for backend upload ──
     const dest = draftDir + fileName;
     const existing = await FileSystem.getInfoAsync(dest);
+    if (existing.exists) await FileSystem.deleteAsync(dest, { idempotent: true });
+    await FileSystem.copyAsync({ from: compressed, to: dest });
 
-    if (existing.exists) {
-      await FileSystem.deleteAsync(dest, { idempotent: true });
+    // ── Stamped version → _view file on disk + gallery (display + lineman backup) ──
+    let displayUri = dest; // fallback: show clean if no stamp
+    if (stampLines?.length) {
+      const stamped = await stampPhoto(compressed, stampLines);
+      const viewDest = dest.replace(/\.jpg$/i, "_view.jpg");
+      const viewExisting = await FileSystem.getInfoAsync(viewDest);
+      if (viewExisting.exists) await FileSystem.deleteAsync(viewDest, { idempotent: true });
+      await FileSystem.copyAsync({ from: stamped, to: viewDest });
+      displayUri = viewDest;
+      // Save stamped copy to device gallery (lineman backup)
+      MediaLibrary.requestPermissionsAsync()
+        .then(({ status }) => {
+          if (status === "granted") MediaLibrary.saveToLibraryAsync(stamped).catch(() => {});
+        })
+        .catch(() => {});
     }
 
-    await FileSystem.copyAsync({ from: stamped, to: dest });
-
-    return createPhotoField(dest, fileName);
+    const version = Date.now();
+    return {
+      uri: `${displayUri}?v=${version}`,  // stamped view for display
+      fileUri: dest,                        // clean file for backend upload
+      name: fileName,
+      type: "image/jpeg",
+      version,
+    };
   }
 
   async function captureFromCamera() {
@@ -789,12 +898,14 @@ export default function PoleDetailScreen() {
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 1, skipProcessing: false });
       if (!photo?.uri) return;
+      const capturedAt = getPHTNow();
       const setter = activeCameraTab === "before" ? setPhotoBefore : activeCameraTab === "after" ? setPhotoAfter : setPhotoTag;
       const qualitySetter = activeCameraTab === "before" ? setQualityBefore : activeCameraTab === "after" ? setQualityAfter : setQualityTag;
       const file = activeCameraTab === "before" ? F.before : activeCameraTab === "after" ? F.after : F.tag;
       setter(createPhotoField(photo.uri, file));
       const saved = await savePhotoDraft(file, photo.uri, buildStampLines(activeCameraTab));
       setter(saved);
+      cacheSet(`photo_captured_at_${pole_id}_${activeCameraTab}`, capturedAt).catch(() => {});
       const variance = await checkPhotoQuality(saved.fileUri);
       const pct = varianceToPercent(variance);
       qualitySetter(pct);
@@ -828,6 +939,7 @@ export default function PoleDetailScreen() {
     if (result.canceled || !result.assets[0]) return;
 
     const rawUri = result.assets[0].uri;
+    const capturedAt = getPHTNow();
     const preview = createPhotoField(rawUri, fileName);
 
     setter(preview);
@@ -839,6 +951,8 @@ export default function PoleDetailScreen() {
     try {
       const saved = await savePhotoDraft(fileName, rawUri);
       setter(saved);
+      const tabFromFile = fileName.includes("_before.") ? "before" : fileName.includes("_after.") ? "after" : fileName.includes("_poletag.") ? "tag" : null;
+      if (tabFromFile) cacheSet(`photo_captured_at_${pole_id}_${tabFromFile}`, capturedAt).catch(() => {});
 
       if (modalLabel && viewerLabel === modalLabel) {
         setViewerPhoto(saved);
@@ -879,6 +993,21 @@ export default function PoleDetailScreen() {
       return;
     }
 
+    // If GPS already captured, ask before overwriting
+    if (lat !== null && lng !== null) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          "Replace GPS?",
+          `This pole already has coordinates:\n${lat.toFixed(6)}, ${lng.toFixed(6)}\n\nRetaking will replace the saved location.`,
+          [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Retake GPS", style: "destructive", onPress: () => resolve(true) },
+          ],
+        );
+      });
+      if (!confirmed) return;
+    }
+
     setGpsCapturing(true);
 
     try {
@@ -905,6 +1034,7 @@ export default function PoleDetailScreen() {
       setGpsDraftState(draft);
       await cacheSet(gpsDraftKey, draft).catch(() => {});
 
+      let queued = false;
       try {
         await api.post(`/poles/${pole_id}/gps`, {
           map_latitude: draft.lat,
@@ -924,7 +1054,16 @@ export default function PoleDetailScreen() {
           );
         });
         setGpsQueued(true);
+        queued = true;
       }
+
+      Alert.alert(
+        "GPS Saved",
+        queued
+          ? `Location captured and queued for sync.\n${draft.lat.toFixed(6)}, ${draft.lng.toFixed(6)}`
+          : `Location saved successfully.\n${draft.lat.toFixed(6)}, ${draft.lng.toFixed(6)}`,
+        [{ text: "OK" }],
+      );
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "Failed to capture GPS.");
     } finally {
@@ -975,10 +1114,24 @@ export default function PoleDetailScreen() {
     const trimmed = editNameDraft.trim();
     if (!trimmed) return;
     setSavingName(true);
+
+    // 1. Update local state immediately (works offline too)
     setEditedPoleName(trimmed);
     await cacheSet(`draft_pole_name_${pole_id}`, trimmed).catch(() => {});
 
-    // Try to save to backend immediately; queue if offline
+    // 2. Patch the poles list cache so the list screen shows the new name without a sync
+    if (node_id) {
+      const polesCacheKey = `poles_node_${node_id}`;
+      const cachedPoles = await cacheGet<any[]>(polesCacheKey).catch(() => null);
+      if (cachedPoles) {
+        const updated = cachedPoles.map((p) =>
+          String(p.id) === String(pole_id) ? { ...p, pole_name: trimmed } : p,
+        );
+        await cacheSet(polesCacheKey, updated).catch(() => {});
+      }
+    }
+
+    // 3. Try to save to backend immediately; queue if offline
     try {
       await api.put(`/poles/${pole_id}`, { pole_name: trimmed });
     } catch (e: any) {

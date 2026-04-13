@@ -1,4 +1,5 @@
 import { gpsQueueCount } from "@/lib/gps-queue";
+import { stopLocationSync } from "@/lib/location-sync";
 import { projectStore } from "@/lib/store";
 import { queueCount } from "@/lib/sync-queue";
 import { tokenStore } from "@/lib/token";
@@ -67,6 +68,7 @@ export default function ProfileScreen() {
         text: "Logout",
         style: "destructive",
         onPress: async () => {
+          stopLocationSync();
           await tokenStore.clear();
           projectStore.clear();
           router.replace("/login" as any);

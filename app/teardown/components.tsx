@@ -628,6 +628,19 @@ export default function TeardownComponentsScreen() {
     );
     setPhotos(result);
 
+    // Override file-modification timestamps with cached capture timestamps (actual field time).
+    // Prevents falsifying when a photo was taken by using the server-receive time instead.
+    const cachedTs = await Promise.all([
+      cacheGet<string>(`photo_captured_at_${params.from_pole_id}_before`),
+      cacheGet<string>(`photo_captured_at_${params.from_pole_id}_after`),
+      cacheGet<string>(`photo_captured_at_${params.from_pole_id}_tag`),
+      cacheGet<string>(`photo_captured_at_${params.to_pole_id}_before`),
+      cacheGet<string>(`photo_captured_at_${params.to_pole_id}_after`),
+      cacheGet<string>(`photo_captured_at_${params.to_pole_id}_tag`),
+    ]);
+    const tsKeys = ["from_before", "from_after", "from_tag", "to_before", "to_after", "to_tag"] as const;
+    cachedTs.forEach((ts, i) => { if (ts) photoTimestamps.current[tsKeys[i]] = ts; });
+
     const cablePath = draftDir + `${fromCode}_cable.jpg`;
     const cableInfo = await FileSystem.getInfoAsync(cablePath);
     if (cableInfo.exists) {

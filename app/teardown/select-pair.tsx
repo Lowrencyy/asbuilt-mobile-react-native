@@ -475,6 +475,7 @@ export default function SelectPairScreen() {
   const [showNewPoleModal, setShowNewPoleModal] = useState(false);
   const [newPoleName, setNewPoleName] = useState("");
   const [newPoleSpanId, setNewPoleSpanId] = useState<number | null>(null);
+  const [newPoleTargetSpan, setNewPoleTargetSpan] = useState<Span | null>(null);
   const [submittingNewPole, setSubmittingNewPole] = useState(false);
 
   useEffect(() => {
@@ -545,7 +546,7 @@ export default function SelectPairScreen() {
 
     cacheGet<Span[]>(CACHE_KEY).then((cached) => {
       if (cached?.length) {
-        const active = cached.filter((s) => s.status !== "completed");
+        const active = cached.filter((s) => s.status !== "completed" && s.status !== "superseded");
         if (active.length === 1) {
           navigateToKabila(active[0]);
           return;
@@ -563,7 +564,7 @@ export default function SelectPairScreen() {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(CACHE_KEY, list);
 
-        const active = list.filter((s) => s.status !== "completed");
+        const active = list.filter((s) => s.status !== "completed" && s.status !== "superseded");
 
         if (active.length === 0) {
           setStatus("empty");
@@ -583,7 +584,7 @@ export default function SelectPairScreen() {
           if (!cached?.length) {
             setStatus("error");
           } else {
-            const active = cached.filter((s) => s.status !== "completed");
+            const active = cached.filter((s) => s.status !== "completed" && s.status !== "superseded");
             if (active.length === 0) setStatus("empty");
             // else: cache handler already set spans + "ok"
           }
@@ -659,7 +660,7 @@ export default function SelectPairScreen() {
         const list: Span[] = Array.isArray(data) ? data : (data?.data ?? []);
         cacheSet(CACHE_KEY, list);
 
-        const active = list.filter((s) => s.status !== "completed");
+        const active = list.filter((s) => s.status !== "completed" && s.status !== "superseded");
 
         if (active.length === 0) {
           setStatus("empty");
@@ -683,9 +684,24 @@ export default function SelectPairScreen() {
   }
 
   function openNewPoleModal(span: Span) {
-    setNewPoleSpanId(span.id);
-    setNewPoleName("");
-    setShowNewPoleModal(true);
+    const fromLabel = span.from_pole?.pole_name ?? span.from_pole?.pole_code ?? "Pole 1";
+    const toLabel   = span.to_pole?.pole_name   ?? span.to_pole?.pole_code   ?? "Pole 2";
+    Alert.alert(
+      "Insert New Pole",
+      `Do you want to add a new pole between:\n\n${fromLabel}  →  ${toLabel}\n\nThis will split the span into two new connections.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Yes, Continue",
+          onPress: () => {
+            setNewPoleSpanId(span.id);
+            setNewPoleTargetSpan(span);
+            setNewPoleName("");
+            setShowNewPoleModal(true);
+          },
+        },
+      ],
+    );
   }
 
   async function handleReportNewPole() {
@@ -697,24 +713,37 @@ export default function SelectPairScreen() {
         pole_name: name,
       });
       const { span_a, span_b, new_pole } = (res as any).data ?? res;
+
       setShowNewPoleModal(false);
       setNewPoleName("");
+      const splitId = newPoleSpanId;
       setNewPoleSpanId(null);
-      // Refresh spans list — replace the superseded span with the two new ones
+      setNewPoleTargetSpan(null);
+
+      // Only keep the span that still involves the current pole (span_a: currentPole → newPole).
+      // span_b (newPole → pole2) belongs to a different pole's view.
       setSpans((prev) => {
-        const without = prev.filter((s) => s.id !== newPoleSpanId);
+        const without = prev.filter((s) => s.id !== splitId);
         const built: Span[] = [];
-        if (span_a) built.push(span_a);
-        if (span_b) built.push(span_b);
-        return [...without, ...built];
+        for (const s of [span_a, span_b]) {
+          if (!s) continue;
+          const involvesCurrent =
+            String(s.from_pole?.id) === String(pole_id) ||
+            String(s.to_pole?.id)   === String(pole_id);
+          if (involvesCurrent) built.push(s);
+        }
+        const next = [...without, ...built];
+        cacheSet(`spans_pole_${pole_id}`, next).catch(() => {});
+        return next;
       });
+
       Alert.alert(
-        "New Pole Added",
-        `"${new_pole?.pole_name ?? name}" has been inserted.\nTwo new spans created:\n• ${span_a?.from_pole?.pole_code} → ${span_a?.to_pole?.pole_code}\n• ${span_b?.from_pole?.pole_code} → ${span_b?.to_pole?.pole_code}`,
+        "Pole Added Successfully",
+        `"${new_pole?.pole_name ?? name}" has been inserted.\n\nNew spans:\n• ${span_a?.from_pole?.pole_code ?? "?"} → ${span_a?.to_pole?.pole_code ?? "?"}\n• ${span_b?.from_pole?.pole_code ?? "?"} → ${span_b?.to_pole?.pole_code ?? "?"}`,
       );
     } catch (e: any) {
       const msg = e?.response?.data?.message ?? e?.message ?? "Unknown error";
-      Alert.alert("Failed", msg);
+      Alert.alert("Failed to Add Pole", msg);
     } finally {
       setSubmittingNewPole(false);
     }
@@ -947,7 +976,7 @@ export default function SelectPairScreen() {
                         onPress={() => openNewPoleModal(item)}
                       >
                         <Text style={styles.newPoleBtnText}>
-                          + May bagong poste dito?
+                          + Insert New Pole Here
                         </Text>
                       </Pressable>
                     </View>
@@ -1098,35 +1127,79 @@ export default function SelectPairScreen() {
           </View>
         </Modal>
 
-        {/* ── Report New Intermediate Pole Modal ── */}
+        {/* ── Insert New Intermediate Pole Modal ── */}
         <Modal
           visible={showNewPoleModal}
           transparent
-          animationType="fade"
-          onRequestClose={() => setShowNewPoleModal(false)}
+          animationType="slide"
+          onRequestClose={() => !submittingNewPole && setShowNewPoleModal(false)}
         >
-          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center" }}>
+          <View style={styles.newPoleOverlay}>
             <View style={styles.newPoleCard}>
-              <Text style={styles.newPoleTitle}>May Bagong Poste?</Text>
-              <Text style={styles.newPoleSub}>
-                Mag-type ng pangalan ng bagong poste. Mahahati ang span na ito:{"\n"}
-                <Text style={{ fontWeight: "700", color: "#111827" }}>
-                  Pole 1 → Bagong Poste → Pole 2
+
+              {/* ── Header ── */}
+              <View style={[styles.newPoleHeader, { backgroundColor: accentColor }]}>
+                <Text style={styles.newPoleHeaderEmoji}>🪝</Text>
+                <Text style={styles.newPoleHeaderTitle}>Insert New Pole</Text>
+                <Text style={styles.newPoleHeaderSub}>
+                  Split this span into two new connections
                 </Text>
-              </Text>
-              <TextInput
-                style={styles.newPoleInput}
-                value={newPoleName}
-                onChangeText={setNewPoleName}
-                placeholder="e.g. P-015, NPT-003"
-                placeholderTextColor="#9CA3AF"
-                autoFocus
-                returnKeyType="done"
-                onSubmitEditing={() => {
-                  if (!submittingNewPole && newPoleName.trim()) handleReportNewPole();
-                }}
-                selectionColor={accentColor}
-              />
+              </View>
+
+              {/* ── Route visualization ── */}
+              {newPoleTargetSpan && (() => {
+                const fromLabel = newPoleTargetSpan.from_pole?.pole_name ?? newPoleTargetSpan.from_pole?.pole_code ?? "Pole 1";
+                const toLabel   = newPoleTargetSpan.to_pole?.pole_name   ?? newPoleTargetSpan.to_pole?.pole_code   ?? "Pole 2";
+                return (
+                  <View style={styles.newPoleRoute}>
+                    {/* From */}
+                    <View style={styles.newPoleRouteNode}>
+                      <View style={[styles.newPoleRouteDot, { backgroundColor: accentColor }]} />
+                      <Text style={styles.newPoleRouteLabel} numberOfLines={2}>{fromLabel}</Text>
+                    </View>
+                    {/* Line + arrow */}
+                    <View style={styles.newPoleRouteConnector}>
+                      <View style={[styles.newPoleRouteLine, { backgroundColor: accentColor + "55" }]} />
+                      <Text style={[styles.newPoleRouteArrow, { color: accentColor }]}>›</Text>
+                    </View>
+                    {/* New pole (center) */}
+                    <View style={styles.newPoleRouteNode}>
+                      <View style={styles.newPoleRouteDotNew} />
+                      <Text style={[styles.newPoleRouteNewLabel]}>New</Text>
+                    </View>
+                    {/* Line + arrow */}
+                    <View style={styles.newPoleRouteConnector}>
+                      <View style={[styles.newPoleRouteLine, { backgroundColor: accentColor + "55" }]} />
+                      <Text style={[styles.newPoleRouteArrow, { color: accentColor }]}>›</Text>
+                    </View>
+                    {/* To */}
+                    <View style={styles.newPoleRouteNode}>
+                      <View style={[styles.newPoleRouteDot, { backgroundColor: accentColor }]} />
+                      <Text style={styles.newPoleRouteLabel} numberOfLines={2}>{toLabel}</Text>
+                    </View>
+                  </View>
+                );
+              })()}
+
+              {/* ── Input ── */}
+              <View style={styles.newPoleInputWrap}>
+                <Text style={styles.newPoleInputLabel}>New Pole Name</Text>
+                <TextInput
+                  style={styles.newPoleInput}
+                  value={newPoleName}
+                  onChangeText={setNewPoleName}
+                  placeholder="e.g. P-015, NPT-003"
+                  placeholderTextColor="#9CA3AF"
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    if (!submittingNewPole && newPoleName.trim()) handleReportNewPole();
+                  }}
+                  selectionColor={accentColor}
+                />
+              </View>
+
+              {/* ── Actions ── */}
               <View style={styles.newPoleActions}>
                 <Pressable
                   style={({ pressed }) => [styles.newPoleCancelBtn, pressed && { opacity: 0.7 }]}
@@ -1139,18 +1212,19 @@ export default function SelectPairScreen() {
                   style={({ pressed }) => [
                     styles.newPoleSaveBtn,
                     { backgroundColor: accentColor },
-                    (submittingNewPole || !newPoleName.trim()) && { opacity: 0.5 },
-                    pressed && { opacity: 0.7 },
+                    (submittingNewPole || !newPoleName.trim()) && { opacity: 0.45 },
+                    pressed && { opacity: 0.75 },
                   ]}
                   onPress={handleReportNewPole}
                   disabled={submittingNewPole || !newPoleName.trim()}
                 >
                   {submittingNewPole
                     ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.newPoleSaveText}>Isumite</Text>
+                    : <Text style={styles.newPoleSaveText}>Confirm Split</Text>
                   }
                 </Pressable>
               </View>
+
             </View>
           </View>
         </Modal>
@@ -1863,12 +1937,124 @@ const styles = StyleSheet.create({
     color: "#6B7280",
   },
 
+  newPoleOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
   newPoleCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 20,
-    padding: 24,
+    overflow: "hidden",
     marginHorizontal: 24,
     gap: 14,
+    paddingBottom: 24,
+    width: "100%",
+    maxWidth: 400,
+  },
+
+  newPoleHeader: {
+    paddingTop: 28,
+    paddingBottom: 22,
+    paddingHorizontal: 24,
+    alignItems: "center",
+    gap: 4,
+  },
+
+  newPoleHeaderEmoji: {
+    fontSize: 36,
+    marginBottom: 6,
+  },
+
+  newPoleHeaderTitle: {
+    fontSize: 21,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: -0.3,
+  },
+
+  newPoleHeaderSub: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.75)",
+    textAlign: "center",
+    marginTop: 2,
+  },
+
+  newPoleRoute: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingHorizontal: 24,
+    paddingVertical: 4,
+  },
+
+  newPoleRouteNode: {
+    alignItems: "center",
+    width: 58,
+    gap: 6,
+  },
+
+  newPoleRouteDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+  },
+
+  newPoleRouteDotNew: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: "#9CA3AF",
+    backgroundColor: "#F3F4F6",
+  },
+
+  newPoleRouteLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#374151",
+    textAlign: "center",
+  },
+
+  newPoleRouteNewLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    textAlign: "center",
+  },
+
+  newPoleRouteConnector: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: 6,
+  },
+
+  newPoleRouteLine: {
+    flex: 1,
+    height: 2,
+  },
+
+  newPoleRouteArrow: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginLeft: 2,
+    marginTop: -1,
+  },
+
+  newPoleInputWrap: {
+    paddingHorizontal: 24,
+    gap: 6,
+  },
+
+  newPoleInputLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#374151",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
   },
 
   newPoleTitle: {
@@ -1901,6 +2087,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
     marginTop: 4,
+    paddingHorizontal: 24,
   },
 
   newPoleCancelBtn: {
